@@ -5,7 +5,7 @@ Type-safe `Result` and `Maybe` monads for TypeScript. Explicit error handling an
 ## Install
 
 ```
-npm install @semyonf/result
+npm install @semyonf/camtschaticus
 ```
 
 ## Quick Start
