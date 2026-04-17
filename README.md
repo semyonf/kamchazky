@@ -30,7 +30,7 @@ if (maybe.some) {
 // Works in ternaries, early returns, switches — anywhere TypeScript does control-flow analysis.
 ```
 
-Most Result libraries (including oxide.ts) expose `.ok()` as a *method*, which returns a plain `boolean`. TypeScript sees no connection between that boolean and the original type, so you still have to call `.unwrap()` and hope for the best. This library uses a discriminant field so the compiler does the work for you.
+Most Result libraries (including oxide.ts) expose `.ok()` as a *method*, which returns a plain `boolean`. TypeScript sees no connection between that boolean and the original type, so you still have to call `.unwrap()` and hope it doesn't throw, which kinda defeats the purpose. This library uses a discriminant field so the compiler does the work for you.
 
 ---
 
