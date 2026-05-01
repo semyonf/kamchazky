@@ -4,10 +4,13 @@ import {
   err,
   isErr,
   isOk,
+  type Maybe,
+  none,
   normalizeError,
   type OkResult,
   ok,
   Result,
+  some,
 } from "../src/index.js";
 
 // ---------------------------------------------------------------------------
@@ -290,9 +293,7 @@ describe("Result.flatten", () => {
 
   test("supports different inner and outer error types", () => {
     const inner = new TypeError("inner");
-    const outer: Result<Result<number, TypeError>, RangeError> = ok(
-      err(inner)
-    );
+    const outer: Result<Result<number, TypeError>, RangeError> = ok(err(inner));
     const r = Result.flatten(outer);
     expect(!r.ok && r.error).toBe(inner);
     expect(!r.ok && r.error).toBeInstanceOf(TypeError);
@@ -331,9 +332,9 @@ describe("Result.match", () => {
 });
 
 describe("Result.exhaustive", () => {
-  test("throws when called", () => {
+  test("throws with value context", () => {
     expect(() => Result.exhaustive(42 as never)).toThrow(
-      "Unhandled result case"
+      "Unhandled result case: 42"
     );
   });
 });
@@ -363,6 +364,48 @@ describe("Result.unwrapOr", () => {
   });
 });
 
+describe("Result.unwrapOrElse", () => {
+  test("returns value for Ok", () => {
+    expect(Result.unwrapOrElse(ok(42), () => 0)).toBe(42);
+  });
+
+  test("calls fn for Err", () => {
+    expect(Result.unwrapOrElse(err(new Error()), () => 99)).toBe(99);
+  });
+
+  test("does not call fn for Ok", () => {
+    const fn = vi.fn(() => 0);
+    Result.unwrapOrElse(ok(42), fn);
+    expect(fn).not.toHaveBeenCalled();
+  });
+});
+
+describe("Result.transpose", () => {
+  test("Ok(Some(v)) -> Some(Ok(v))", () => {
+    const r = Result.transpose(ok(some(42)));
+    expect(r.some).toBe(true);
+    if (r.some) {
+      expect(r.value.ok).toBe(true);
+      if (r.value.ok) expect(r.value.value).toBe(42);
+    }
+  });
+
+  test("Ok(None) -> None", () => {
+    const r = Result.transpose(ok(none()));
+    expect(r.some).toBe(false);
+  });
+
+  test("Err(e) -> Some(Err(e))", () => {
+    const e = new Error("fail");
+    const r = Result.transpose(err(e) as Result<Maybe<number>, Error>);
+    expect(r.some).toBe(true);
+    if (r.some) {
+      expect(r.value.ok).toBe(false);
+      if (!r.value.ok) expect(r.value.error).toBe(e);
+    }
+  });
+});
+
 describe("Result.expect", () => {
   test("returns value for Ok", () => {
     expect(Result.expect(ok(42), "should be ok")).toBe(42);
@@ -381,6 +424,26 @@ describe("Result.expect", () => {
       expect.unreachable();
     } catch (e) {
       expect((e as Error).cause).toBe(original);
+    }
+  });
+
+  test("preserves error prototype (TypeError)", () => {
+    try {
+      Result.expect(err(new TypeError("inner")), "msg");
+      expect.unreachable();
+    } catch (e) {
+      expect(e).toBeInstanceOf(TypeError);
+      expect(e).toBeInstanceOf(Error);
+      expect((e as Error).message).toBe("msg: inner");
+    }
+  });
+
+  test("preserves error prototype (RangeError)", () => {
+    try {
+      Result.expect(err(new RangeError("inner")), "msg");
+      expect.unreachable();
+    } catch (e) {
+      expect(e).toBeInstanceOf(RangeError);
     }
   });
 });
@@ -466,10 +529,63 @@ describe("Result.normalizeError", () => {
     expect(e.message).toBe("42");
   });
 
-  test("wraps object as Error", () => {
+  test("wraps object as Error using JSON.stringify", () => {
     const e = normalizeError({ code: 1 });
     expect(e).toBeInstanceOf(Error);
-    expect(e.message).toBe("[object Object]");
+    expect(e.message).toBe('{"code":1}');
+  });
+
+  test("wraps null as Error", () => {
+    const e = normalizeError(null);
+    expect(e).toBeInstanceOf(Error);
+    expect(e.message).toBe("null");
+  });
+
+  test("wraps undefined as Error", () => {
+    const e = normalizeError(undefined);
+    expect(e).toBeInstanceOf(Error);
+    expect(e.message).toBe("undefined");
+  });
+
+  test("handles null-prototype objects", () => {
+    const obj = Object.create(null);
+    obj.key = "value";
+    const e = normalizeError(obj);
+    expect(e).toBeInstanceOf(Error);
+    expect(e.message).toBe('{"key":"value"}');
+  });
+
+  test("handles empty null-prototype object", () => {
+    const obj = Object.create(null);
+    const e = normalizeError(obj);
+    expect(e).toBeInstanceOf(Error);
+    expect(e.message).toBe("Non-stringifiable thrown value");
+  });
+
+  test("handles objects with throwing toString", () => {
+    const e = normalizeError({
+      toString() {
+        throw new Error("boom");
+      },
+    });
+    expect(e).toBeInstanceOf(Error);
+    // JSON.stringify should still work since it calls toJSON/toISOString
+    // before toString, and for plain objects it serializes own enumerable props
+  });
+
+  test("handles BigInt via String fallback", () => {
+    const e = normalizeError(BigInt(42));
+    expect(e).toBeInstanceOf(Error);
+    expect(e.message).toBe("42");
+  });
+
+  test("handles circular references via String fallback", () => {
+    const obj: Record<string, unknown> = {};
+    obj["self"] = obj;
+    const e = normalizeError(obj);
+    expect(e).toBeInstanceOf(Error);
+    // JSON.stringify throws on circular; falls back to String which gives
+    // "[object Object]"
   });
 });
 
@@ -507,6 +623,24 @@ describe("Result.tryCatch", () => {
     );
     expect(!r.ok && r.error).toBeInstanceOf(TypeError);
   });
+
+  test("returns Err when error mapper throws", () => {
+    const r = Result.tryCatch(
+      () => {
+        throw new Error("original");
+      },
+      () => {
+        throw new Error("mapper-fail");
+      }
+    );
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      const e = r.error as Error;
+      expect(e.message).toBe("Error mapper threw");
+      expect(e.cause).toBeInstanceOf(Error);
+      expect((e.cause as Error).message).toBe("mapper-fail");
+    }
+  });
 });
 
 describe("Result.tryCatchAsync", () => {
@@ -531,6 +665,19 @@ describe("Result.tryCatchAsync", () => {
       (e) => new TypeError((e as Error).message)
     );
     expect(!r.ok && r.error).toBeInstanceOf(TypeError);
+  });
+
+  test("returns Err when error mapper throws", async () => {
+    const r = await Result.tryCatchAsync(
+      () => Promise.reject(new Error("original")),
+      () => {
+        throw new Error("mapper-fail");
+      }
+    );
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect((r.error as Error).message).toBe("Error mapper threw");
+    }
   });
 });
 
@@ -561,6 +708,19 @@ describe("Result.fromPromise", () => {
       (e) => new TypeError((e as Error).message)
     );
     expect(!r.ok && r.error).toBeInstanceOf(TypeError);
+  });
+
+  test("returns Err when error mapper throws", async () => {
+    const r = await Result.fromPromise(
+      Promise.reject(new Error("original")),
+      () => {
+        throw new Error("mapper-fail");
+      }
+    );
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect((r.error as Error).message).toBe("Error mapper threw");
+    }
   });
 });
 
@@ -635,8 +795,37 @@ describe("Result.allAsync", () => {
       Promise.resolve(err(new Error("result-err"))),
       Promise.reject(new Error("rejection")) as Promise<Result<number, Error>>
     );
-    // Promise.all rejects on first rejection, so we get the rejection
+    // Promise.allSettled resolves all, first Err in iteration order wins
     expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error.message).toBe("result-err");
+    }
+  });
+});
+
+describe("Result.collectAsync", () => {
+  test("collects all errors from mixed rejections and Errs", async () => {
+    const r = await Result.collectAsync(
+      Promise.resolve(ok(1)),
+      Promise.resolve(err(new Error("err1"))),
+      Promise.reject("raw-rejection") as Promise<Result<number, Error>>
+    );
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error).toBeInstanceOf(AggregateError);
+      expect(r.error.errors).toHaveLength(2);
+    }
+  });
+
+  test("returns Ok values when all succeed", async () => {
+    const r = await Result.collectAsync(
+      Promise.resolve(ok(1)),
+      Promise.resolve(ok(2))
+    );
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value).toEqual([1, 2]);
+    }
   });
 });
 
@@ -702,6 +891,60 @@ describe("Result.collect", () => {
 // ---------------------------------------------------------------------------
 // Method chaining
 // ---------------------------------------------------------------------------
+
+describe("OkResult instance methods", () => {
+  test(".match calls ok handler", () => {
+    expect(ok(42).match({ ok: (v) => v * 2, err: () => -1 })).toBe(84);
+  });
+
+  test(".unwrap returns value", () => {
+    expect(ok(42).unwrap()).toBe(42);
+  });
+
+  test(".expect returns value", () => {
+    expect(ok(42).expect("should be ok")).toBe(42);
+  });
+
+  test(".unwrapOr returns value", () => {
+    expect(ok(42).unwrapOr(0)).toBe(42);
+  });
+
+  test(".unwrapOrElse returns value without calling fn", () => {
+    const fn = vi.fn(() => 0);
+    expect(ok(42).unwrapOrElse(fn)).toBe(42);
+    expect(fn).not.toHaveBeenCalled();
+  });
+});
+
+describe("ErrResult instance methods", () => {
+  test(".match calls err handler", () => {
+    expect(
+      err(new Error("e")).match({ ok: () => "ok", err: (e) => e.message })
+    ).toBe("e");
+  });
+
+  test(".unwrap throws", () => {
+    const e = new Error("boom");
+    expect(() => err(e).unwrap()).toThrow(e);
+  });
+
+  test(".expect throws with prototype preservation", () => {
+    try {
+      err(new TypeError("inner")).expect("msg");
+      expect.unreachable();
+    } catch (e) {
+      expect(e).toBeInstanceOf(TypeError);
+    }
+  });
+
+  test(".unwrapOr returns fallback", () => {
+    expect(err(new Error()).unwrapOr(99)).toBe(99);
+  });
+
+  test(".unwrapOrElse calls fn", () => {
+    expect(err(new Error()).unwrapOrElse(() => 99)).toBe(99);
+  });
+});
 
 describe("chaining", () => {
   test("ok().map().flatMap().mapError()", () => {

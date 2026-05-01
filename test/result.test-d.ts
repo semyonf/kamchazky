@@ -200,17 +200,17 @@ describe("Result.mapError types", () => {
   });
 
   test("preserves OkResult when input is OkResult", () => {
-    expectTypeOf(
-      Result.mapError(ok(1), () => new TypeError())
-    ).toEqualTypeOf<OkResult<number>>();
+    expectTypeOf(Result.mapError(ok(1), () => new TypeError())).toEqualTypeOf<
+      OkResult<number>
+    >();
   });
 });
 
 describe("Result.inspect types", () => {
   test("preserves OkResult when input is OkResult", () => {
-    expectTypeOf(
-      Result.inspect(ok(1), () => {})
-    ).toEqualTypeOf<OkResult<number>>();
+    expectTypeOf(Result.inspect(ok(1), () => {})).toEqualTypeOf<
+      OkResult<number>
+    >();
   });
 
   test("preserves Result when input is Result", () => {
@@ -341,6 +341,17 @@ describe("Result.allAsync types", () => {
     if (r.ok) {
       expectTypeOf(r.value[0]).toEqualTypeOf<number>();
       expectTypeOf(r.value[1]).toEqualTypeOf<string>();
+    }
+  });
+
+  test("includes Error in error type for rejected promises", async () => {
+    const r = await Result.allAsync(
+      Promise.resolve(ok(1)),
+      Promise.reject("raw") as Promise<Result<number, TypeError>>
+    );
+    if (!r.ok) {
+      // Rejected promises are normalized to Error, widening the error type
+      expectTypeOf(r.error).toEqualTypeOf<TypeError | Error>();
     }
   });
 });
@@ -548,5 +559,13 @@ describe("extraction types", () => {
       expectTypeOf(Result.expect(r, "msg")).toEqualTypeOf<number>();
     }
     check(ok(1));
+  });
+
+  test("instance unwrapOr returns T", () => {
+    expectTypeOf(ok(1).unwrapOr(0)).toEqualTypeOf<number>();
+  });
+
+  test("instance unwrapOrElse returns T", () => {
+    expectTypeOf(ok(1).unwrapOrElse(() => 0)).toEqualTypeOf<number>();
   });
 });

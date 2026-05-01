@@ -1,7 +1,10 @@
 {
-  "name": "@semyonf/camtschaticus",
-  "version": "0.1.0",
-  "description": "Type-safe Result monad for TypeScript",
+  "name": "@semyonf/kamchazky",
+  "version": "0.2.0",
+  "author": "Semyón <taxnuke@gmail.com>",                                                                                                   
+  "homepage": "https://github.com/semyonf/kamchazky#readme",                                                                                
+  "bugs": { "url": "https://github.com/semyonf/kamchazky/issues" },
+  "description": "Type-safe Result and Maybe monads for TypeScript. Explicit error handling and optional values with full type inference. No exceptions required.",
   "type": "module",
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
@@ -24,7 +27,7 @@
   "scripts": {
     "build": "tsup",
     "test": "vitest run",
-    "test:types": "vitest typecheck --run test/result.test-d.ts",
+    "test:types": "vitest typecheck --run test/result.test-d.ts test/maybe.test-d.ts",
     "typecheck": "tsc",
     "lint": "biome lint",
     "format": "biome format --write",
@@ -43,12 +46,16 @@
     "oxide"
   ],
   "license": "MIT",
+  "sideEffects": false,
+  "engines": {
+    "node": ">=20"
+  },
   "publishConfig": {
     "access": "public"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/semyonf/camtschaticus.git"
+    "url": "git+https://github.com/semyonf/kamchazky.git"
   },
   "devDependencies": {
     "@biomejs/biome": "2.4.10",

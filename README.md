@@ -1,11 +1,11 @@
-# result
+# kamchazky
 
 Type-safe `Result` and `Maybe` monads for TypeScript. Explicit error handling and optional values with full type inference — no exceptions required.
 
 ## Install
 
 ```
-npm install @semyonf/camtschaticus
+npm install @semyonf/kamchazky
 ```
 
 ## Quick Start

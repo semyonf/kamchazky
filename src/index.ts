@@ -9,6 +9,11 @@ export type OkResult<T> = {
   mapError<F extends Error>(fn: (error: never) => F): OkResult<T>;
   inspect(fn: (value: T) => void): OkResult<T>;
   inspectError(fn: (error: never) => void): OkResult<T>;
+  match<R>(handlers: { ok: (value: T) => R; err: (error: never) => R }): R;
+  unwrap(): T;
+  unwrapOr(fallback: T): T;
+  unwrapOrElse(fn: () => T): T;
+  expect(message: string): T;
 };
 
 /** A failed result containing an error of type `E`. */
@@ -22,6 +27,11 @@ export type ErrResult<E extends Error = Error> = {
   mapError<F extends Error>(fn: (error: E) => F): ErrResult<F>;
   inspect(fn: (value: never) => void): ErrResult<E>;
   inspectError(fn: (error: E) => void): ErrResult<E>;
+  match<R>(handlers: { ok: (value: never) => R; err: (error: E) => R }): R;
+  unwrap(): never;
+  unwrapOr<T>(fallback: T): T;
+  unwrapOrElse<T>(fn: () => T): T;
+  expect(message: string): never;
 };
 
 /**
@@ -56,6 +66,14 @@ function ok<T>(value: T): OkResult<T> {
       return self;
     },
     inspectError: (_fn: (error: never) => void): OkResult<T> => self,
+    match: <R>(handlers: {
+      ok: (value: T) => R;
+      err: (error: never) => R;
+    }): R => handlers.ok(value),
+    unwrap: (): T => value,
+    unwrapOr: (_fallback: T): T => value,
+    unwrapOrElse: (_fn: () => T): T => value,
+    expect: (_message: string): T => value,
   });
   return self;
 }
@@ -75,6 +93,23 @@ function err<E extends Error>(error: E): ErrResult<E> {
     inspectError: (fn: (error: E) => void): ErrResult<E> => {
       fn(error);
       return self;
+    },
+    match: <R>(handlers: {
+      ok: (value: never) => R;
+      err: (error: E) => R;
+    }): R => handlers.err(error),
+    unwrap: (): never => {
+      throw error;
+    },
+    unwrapOr: <T>(fallback: T): T => fallback,
+    unwrapOrElse: <T>(fn: () => T): T => fn(),
+    expect: (message: string): never => {
+      const thrown = new Error(`${message}: ${error.message}`, {
+        cause: error,
+      });
+      Object.setPrototypeOf(thrown, error.constructor.prototype);
+      if (error.stack !== undefined) thrown.stack = error.stack;
+      throw thrown;
     },
   });
   return self;
@@ -205,8 +240,14 @@ function match<T, E extends Error, R>(
 }
 
 /** Compile-time exhaustiveness guard — only accepts `never`. */
-function exhaustive(_: never): never {
-  throw new Error("Unhandled result case");
+function exhaustive(value: never): never {
+  let detail: string;
+  try {
+    detail = JSON.stringify(value);
+  } catch {
+    detail = String(value);
+  }
+  throw new Error(`Unhandled result case: ${detail}`);
 }
 
 /** Return the `Ok` value or throw the contained error. */
@@ -225,12 +266,23 @@ function unwrapOr<T, E extends Error>(result: Result<T, E>, fallback: T): T {
   return result.ok ? result.value : fallback;
 }
 
+/** Return the `Ok` value, or compute a fallback from `fn`. */
+function unwrapOrElse<T, E extends Error>(
+  result: Result<T, E>,
+  fn: () => T
+): T {
+  return result.ok ? result.value : fn();
+}
+
 /** Return the `Ok` value or throw with a custom `message`. */
 function expect<T, E extends Error>(result: Result<T, E>, message: string): T {
   if (result.ok) return result.value;
-  throw new Error(`${message}: ${result.error.message}`, {
+  const thrown = new Error(`${message}: ${result.error.message}`, {
     cause: result.error,
   });
+  Object.setPrototypeOf(thrown, result.error.constructor.prototype);
+  if (result.error.stack !== undefined) thrown.stack = result.error.stack;
+  throw thrown;
 }
 
 /** Convert a nullable value to a `Result`. */
@@ -262,7 +314,23 @@ function fromPredicate<T, E extends Error>(
 
 /** Convert an unknown thrown value to an `Error` instance. */
 function normalizeError(error: unknown): Error {
-  return error instanceof Error ? error : new Error(String(error));
+  if (error instanceof Error) return error;
+  if (error === null || error === undefined) return new Error(String(error));
+  if (typeof error === "object") {
+    try {
+      const json = JSON.stringify(error);
+      if (json !== "{}") return new Error(json);
+      // JSON.stringify produced '{}' — likely RegExp or similar with no
+      // enumerable own properties. Fall through to String().
+    } catch {
+      // JSON.stringify throws on BigInt and circular references
+    }
+  }
+  try {
+    return new Error(String(error));
+  } catch {
+    return new Error("Non-stringifiable thrown value");
+  }
 }
 
 /** Wrap a synchronous function that may throw into a `Result`. */
@@ -278,7 +346,11 @@ function tryCatch<T, E extends Error>(
   try {
     return ok(fn());
   } catch (error) {
-    return err(onError ? onError(error) : normalizeError(error));
+    try {
+      return err(onError ? onError(error) : normalizeError(error));
+    } catch (mapperError) {
+      return err(new Error("Error mapper threw", { cause: mapperError }));
+    }
   }
 }
 
@@ -295,7 +367,11 @@ async function tryCatchAsync<T, E extends Error>(
   try {
     return ok(await fn());
   } catch (error) {
-    return err(onError ? onError(error) : normalizeError(error));
+    try {
+      return err(onError ? onError(error) : normalizeError(error));
+    } catch (mapperError) {
+      return err(new Error("Error mapper threw", { cause: mapperError }));
+    }
   }
 }
 
@@ -312,7 +388,11 @@ async function fromPromise<T, E extends Error>(
   try {
     return ok(await promise);
   } catch (error) {
-    return err(onError ? onError(error) : normalizeError(error));
+    try {
+      return err(onError ? onError(error) : normalizeError(error));
+    } catch (mapperError) {
+      return err(new Error("Error mapper threw", { cause: mapperError }));
+    }
   }
 }
 
@@ -336,34 +416,64 @@ function all<const R extends readonly AnyResult[]>(
 
 /**
  * Like `all`, but accepts promises of `Result`s.  All promises are resolved
- * concurrently via `Promise.all` before checking for errors.
+ * concurrently via `Promise.allSettled` before checking for errors.
  *
  * Promises are expected to resolve to `Result`s — not reject.  If a promise
- * rejects, the rejection is caught and wrapped as an `Err`.
+ * does reject, the rejection is caught and wrapped as an `Err`.
+ *
+ * @breaking v0.2 — Uses `Promise.allSettled` instead of `Promise.all`. All
+ * promises are now always awaited to completion; the first error found during
+ * iteration is returned.
  */
 async function allAsync<const R extends readonly Promise<AnyResult>[]>(
   ...promises: R
 ): Promise<
   Result<
     { [K in keyof R]: ValueOf<Awaited<R[K]>> },
-    ErrorOf<Awaited<R[number]>>
+    ErrorOf<Awaited<R[number]>> | Error
   >
 > {
   type Values = { [K in keyof R]: ValueOf<Awaited<R[K]>> };
-  type Errors = ErrorOf<Awaited<R[number]>>;
+  type Errors = ErrorOf<Awaited<R[number]>> | Error;
 
-  let results: AnyResult[];
-  try {
-    results = await Promise.all(promises);
-  } catch (error) {
-    // Defensive: catches raw promise rejections (contract violation).
-    return err(normalizeError(error)) as ErrResult<Errors>;
-  }
+  const settled = await Promise.allSettled(promises);
   const values: unknown[] = [];
-  for (const result of results) {
-    if (!result.ok) return err(result.error) as ErrResult<Errors>;
-    values.push(result.value);
+  for (const s of settled) {
+    if (s.status === "rejected") {
+      return err(normalizeError(s.reason)) as ErrResult<Errors>;
+    }
+    if (!s.value.ok) {
+      return err(s.value.error) as ErrResult<Errors>;
+    }
+    values.push(s.value.value);
   }
+  return ok(values) as OkResult<Values>;
+}
+
+/**
+ * Like `collect`, but for promises of `Result`s.  Resolves all promises
+ * via `Promise.allSettled`, then collects all errors.  Returns an
+ * `AggregateError` containing every error found.
+ */
+async function collectAsync<const R extends readonly Promise<AnyResult>[]>(
+  ...promises: R
+): Promise<Result<{ [K in keyof R]: ValueOf<Awaited<R[K]>> }, AggregateError>> {
+  type Values = { [K in keyof R]: ValueOf<Awaited<R[K]>> };
+
+  const settled = await Promise.allSettled(promises);
+  const values: unknown[] = [];
+  const errors: Error[] = [];
+  for (const s of settled) {
+    if (s.status === "rejected") {
+      errors.push(normalizeError(s.reason));
+    } else if (!s.value.ok) {
+      errors.push(s.value.error);
+    } else {
+      values.push(s.value.value);
+    }
+  }
+  if (errors.length > 0)
+    return err(new AggregateError(errors)) as ErrResult<AggregateError>;
   return ok(values) as OkResult<Values>;
 }
 
@@ -398,6 +508,11 @@ export type Some<T> = {
   flatMap<U>(fn: (value: T) => Maybe<U>): Maybe<U>;
   filter(predicate: (value: T) => boolean): Maybe<T>;
   inspect(fn: (value: T) => void): Some<T>;
+  match<R>(handlers: { some: (value: T) => R; none: () => R }): R;
+  unwrap(): T;
+  expect(message: string): T;
+  unwrapOr(fallback: T): T;
+  unwrapOrElse(fn: () => T): T;
 };
 
 /** A `Maybe` that contains no value. */
@@ -407,6 +522,11 @@ export type None = {
   flatMap<U>(fn: (value: never) => Maybe<U>): None;
   filter(predicate: (value: never) => boolean): None;
   inspect(fn: (value: never) => void): None;
+  match<R>(handlers: { some: (value: never) => R; none: () => R }): R;
+  unwrap(): never;
+  expect(message: string): never;
+  unwrapOr<T>(fallback: T): T;
+  unwrapOrElse<T>(fn: () => T): T;
 };
 
 /**
@@ -437,6 +557,12 @@ function some<T>(value: T): Some<T> {
       fn(value);
       return self;
     },
+    match: <R>(handlers: { some: (value: T) => R; none: () => R }): R =>
+      handlers.some(value),
+    unwrap: (): T => value,
+    expect: (_message: string): T => value,
+    unwrapOr: (_fallback: T): T => value,
+    unwrapOrElse: (_fn: () => T): T => value,
   });
   return self;
 }
@@ -447,6 +573,16 @@ const NONE: None = Object.freeze({
   flatMap: <U>(_fn: (value: never) => Maybe<U>): None => NONE,
   filter: (_predicate: (value: never) => boolean): None => NONE,
   inspect: (_fn: (value: never) => void): None => NONE,
+  match: <R>(handlers: { some: (value: never) => R; none: () => R }): R =>
+    handlers.none(),
+  unwrap: (): never => {
+    throw new Error("Called unwrap on None");
+  },
+  expect: (message: string): never => {
+    throw new Error(message);
+  },
+  unwrapOr: <T>(fallback: T): T => fallback,
+  unwrapOrElse: <T>(fn: () => T): T => fn(),
 });
 
 /** Create an empty `Maybe`. */
@@ -532,6 +668,11 @@ function maybeUnwrapOr<T>(maybe: Maybe<T>, fallback: T): T {
   return maybe.some ? maybe.value : fallback;
 }
 
+/** Return the `Some` value, or compute a fallback from `fn`. */
+function maybeUnwrapOrElse<T>(maybe: Maybe<T>, fn: () => T): T {
+  return maybe.some ? maybe.value : fn();
+}
+
 /** Return the `Some` value or throw with a custom `message`. */
 function maybeExpect<T>(maybe: Maybe<T>, message: string): T {
   if (maybe.some) return maybe.value;
@@ -539,7 +680,9 @@ function maybeExpect<T>(maybe: Maybe<T>, message: string): T {
 }
 
 /** Convert a nullable value to a `Maybe`. */
-function maybeFromNullable<T>(value: T | null | undefined): Maybe<NonNullable<T>> {
+function maybeFromNullable<T>(
+  value: T | null | undefined
+): Maybe<NonNullable<T>> {
   return value != null ? some(value as NonNullable<T>) : NONE;
 }
 
@@ -585,16 +728,44 @@ function maybeFirstSome<T>(...maybes: Maybe<T>[]): Maybe<T> {
   return NONE;
 }
 
+/** Like `all`, but for promises of `Maybe`s.  Resolves all promises
+ *  concurrently via `Promise.allSettled`. */
+async function maybeAllAsync<const M extends readonly Promise<AnyMaybe>[]>(
+  ...promises: M
+): Promise<Maybe<{ [K in keyof M]: MaybeValueOf<Awaited<M[K]>> }>> {
+  type Values = { [K in keyof M]: MaybeValueOf<Awaited<M[K]>> };
+
+  const settled = await Promise.allSettled(promises);
+  const values: unknown[] = [];
+  for (const s of settled) {
+    if (s.status === "rejected") return NONE;
+    if (!s.value.some) return NONE;
+    values.push(s.value.value);
+  }
+  return some(values) as Some<Values>;
+}
+
+/** Combine multiple `Maybe's, returning `None` if any is `None`.
+ * Same as `all` — `None` carries no error data to collect,
+ * unlike `Result.collect` which gathers all errors.
+ */
+const maybeCollect = maybeAll;
+
 // ---------------------------------------------------------------------------
 // Maybe <-> Result interop
 // ---------------------------------------------------------------------------
 
-/** Convert a `Maybe` to a `Result`, using `error` for `None`. */
+/** Convert a `Maybe` to a `Result`, calling `errorFactory` only when `None`.
+ *
+ * @breaking v0.2 — The second argument changed from `error: E` to
+ * `errorFactory: () => E`. The factory is only called when the Maybe is
+ * None, avoiding unnecessary error construction for Some.
+ */
 function maybeToResult<T, E extends Error>(
   maybe: Maybe<T>,
-  error: E
+  errorFactory: () => E
 ): Result<T, E> {
-  return maybe.some ? ok(maybe.value) : err(error);
+  return maybe.some ? ok(maybe.value) : err(errorFactory());
 }
 
 /** Convert a `Result` to a `Maybe`, discarding the error. */
@@ -604,15 +775,38 @@ function maybeFromResult<T, E extends Error>(result: Result<T, E>): Maybe<T> {
 
 /** Convert a `Result` to a `Maybe`, discarding the error. */
 function resultToMaybe<T, E extends Error>(result: Result<T, E>): Maybe<T> {
-  return result.ok ? some(result.value) : NONE;
+  return maybeFromResult(result);
 }
 
-/** Convert a `Maybe` to a `Result`, using `error` for `None`. */
+/** Convert a `Maybe` to a `Result`, calling `errorFactory` only when `None`.
+ * Alias for `maybeToResult`.
+ *
+ * @breaking v0.2 — The second argument changed from `error: E` to
+ * `errorFactory: () => E`.
+ */
 function resultFromMaybe<T, E extends Error>(
   maybe: Maybe<T>,
-  error: E
+  errorFactory: () => E
 ): Result<T, E> {
-  return maybe.some ? ok(maybe.value) : err(error);
+  return maybeToResult(maybe, errorFactory);
+}
+
+/** Convert a `Result<Maybe<T>, E>` to `Maybe<Result<T, E>>`. */
+function resultTranspose<T, E extends Error>(
+  result: Result<Maybe<T>, E>
+): Maybe<Result<T, E>> {
+  if (!result.ok) return some(result as ErrResult<E>);
+  if (result.value.some) return some(ok(result.value.value));
+  return NONE;
+}
+
+/** Convert a `Maybe<Result<T, E>>` to `Result<Maybe<T>, E>`. */
+function maybeTranspose<T, E extends Error>(
+  maybe: Maybe<Result<T, E>>
+): Result<Maybe<T>, E> {
+  if (!maybe.some) return ok(NONE) as OkResult<Maybe<T>>;
+  if (maybe.value.ok) return ok(some(maybe.value.value));
+  return err(maybe.value.error) as ErrResult<E>;
 }
 
 export const Maybe = {
@@ -628,13 +822,17 @@ export const Maybe = {
   match: maybeMatch,
   unwrap: maybeUnwrap,
   unwrapOr: maybeUnwrapOr,
+  unwrapOrElse: maybeUnwrapOrElse,
   expect: maybeExpect,
   fromNullable: maybeFromNullable,
   fromPredicate: maybeFromPredicate,
   all: maybeAll,
+  allAsync: maybeAllAsync,
+  collect: maybeCollect,
   firstSome: maybeFirstSome,
   toResult: maybeToResult,
   fromResult: maybeFromResult,
+  transpose: maybeTranspose,
 } as const satisfies Record<string, (...args: never[]) => unknown>;
 
 // Add interop to Result namespace
@@ -655,6 +853,7 @@ export const Result = {
   exhaustive,
   unwrap,
   unwrapOr,
+  unwrapOrElse,
   expect,
   fromNullable,
   fromPredicate,
@@ -665,8 +864,10 @@ export const Result = {
   all,
   allAsync,
   collect,
+  collectAsync,
   toMaybe: resultToMaybe,
   fromMaybe: resultFromMaybe,
+  transpose: resultTranspose,
 } as const satisfies Record<string, (...args: never[]) => unknown>;
 
 export { err, isErr, isNone, isOk, isSome, none, normalizeError, ok, some };

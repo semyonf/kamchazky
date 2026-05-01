@@ -1,13 +1,13 @@
 import { describe, expect, test, vi } from "vitest";
 import {
-  type Maybe,
-  Maybe as M,
-  type Some,
   err,
   isNone,
   isSome,
+  Maybe as M,
+  type Maybe,
   none,
   ok,
+  type Some,
   some,
 } from "../src/index.js";
 
@@ -287,6 +287,46 @@ describe("Maybe.unwrapOr", () => {
   });
 });
 
+describe("Maybe.unwrapOrElse", () => {
+  test("returns value for Some", () => {
+    expect(M.unwrapOrElse(some(42), () => 0)).toBe(42);
+  });
+
+  test("calls fn for None", () => {
+    expect(M.unwrapOrElse(none() as Maybe<number>, () => 99)).toBe(99);
+  });
+
+  test("does not call fn for Some", () => {
+    const fn = vi.fn(() => 0);
+    M.unwrapOrElse(some(42), fn);
+    expect(fn).not.toHaveBeenCalled();
+  });
+});
+
+describe("Maybe.transpose", () => {
+  test("Some(Ok(v)) -> Ok(Some(v))", () => {
+    const m = M.transpose(some(ok(42)));
+    expect(m.ok).toBe(true);
+    if (m.ok) {
+      expect(m.value.some).toBe(true);
+      if (m.value.some) expect(m.value.value).toBe(42);
+    }
+  });
+
+  test("Some(Err(e)) -> Err(e)", () => {
+    const m = M.transpose(some(err(new Error("fail"))));
+    expect(m.ok).toBe(false);
+  });
+
+  test("None -> Ok(None)", () => {
+    const m = M.transpose(none() as Maybe<Result<number, Error>>);
+    expect(m.ok).toBe(true);
+    if (m.ok) {
+      expect(m.value.some).toBe(false);
+    }
+  });
+});
+
 describe("Maybe.expect", () => {
   test("returns value for Some", () => {
     expect(M.expect(some(42), "should exist")).toBe(42);
@@ -388,20 +428,66 @@ describe("Maybe.firstSome", () => {
   });
 });
 
+describe("Maybe.allAsync", () => {
+  test("combines all Some promises into a tuple", async () => {
+    const m = await M.allAsync(
+      Promise.resolve(some(1)),
+      Promise.resolve(some(2))
+    );
+    expect(m.some).toBe(true);
+    if (m.some) {
+      expect(m.value).toEqual([1, 2]);
+    }
+  });
+
+  test("returns None for rejected promise", async () => {
+    const m = await M.allAsync(
+      Promise.resolve(some(1)),
+      Promise.reject(new Error("boom")) as Promise<Maybe<number>>
+    );
+    expect(m.some).toBe(false);
+  });
+
+  test("returns None when any resolved value is None", async () => {
+    const m = await M.allAsync(
+      Promise.resolve(some(1)),
+      Promise.resolve(none())
+    );
+    expect(m.some).toBe(false);
+  });
+});
+
+describe("Maybe.collect", () => {
+  test("is an alias for all", () => {
+    const m = M.collect(some(1), some(2));
+    expect(m.some && m.value).toEqual([1, 2]);
+  });
+
+  test("returns None like all", () => {
+    const m = M.collect(some(1), none() as Maybe<number>);
+    expect(m.some).toBe(false);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Maybe <-> Result interop
 // ---------------------------------------------------------------------------
 
 describe("Maybe.toResult", () => {
   test("converts Some to Ok", () => {
-    const r = M.toResult(some(42), new Error("missing"));
+    const r = M.toResult(some(42), () => new Error("missing"));
     expect(r.ok && r.value).toBe(42);
   });
 
   test("converts None to Err", () => {
-    const e = new Error("missing");
-    const r = M.toResult(none(), e);
-    expect(!r.ok && r.error).toBe(e);
+    const r = M.toResult(none(), () => new Error("missing"));
+    expect(!r.ok && r.error.message).toBe("missing");
+  });
+
+  test("does not call errorFactory for Some", () => {
+    const factory = vi.fn(() => new Error("missing"));
+    M.toResult(some(42), factory);
+    expect(factory).not.toHaveBeenCalled();
   });
 });
 
@@ -434,20 +520,67 @@ describe("Result.toMaybe", () => {
 
 describe("Result.fromMaybe", () => {
   test("converts Some to Ok", () => {
-    const r = Result.fromMaybe(some(42), new Error("missing"));
+    const r = Result.fromMaybe(some(42), () => new Error("missing"));
     expect(r.ok && r.value).toBe(42);
   });
 
   test("converts None to Err", () => {
-    const e = new Error("missing");
-    const r = Result.fromMaybe(none(), e);
-    expect(!r.ok && r.error).toBe(e);
+    const r = Result.fromMaybe(none(), () => new Error("missing"));
+    expect(!r.ok && r.error.message).toBe("missing");
+  });
+
+  test("does not call errorFactory for Some", () => {
+    const factory = vi.fn(() => new Error("missing"));
+    Result.fromMaybe(some(42), factory);
+    expect(factory).not.toHaveBeenCalled();
   });
 });
 
-// ---------------------------------------------------------------------------
-// Method chaining
-// ---------------------------------------------------------------------------
+describe("Some instance methods", () => {
+  test(".match calls some handler", () => {
+    expect(some(42).match({ some: (v) => v * 2, none: () => -1 })).toBe(84);
+  });
+
+  test(".unwrap returns value", () => {
+    expect(some(42).unwrap()).toBe(42);
+  });
+
+  test(".expect returns value", () => {
+    expect(some(42).expect("should exist")).toBe(42);
+  });
+
+  test(".unwrapOr returns value", () => {
+    expect(some(42).unwrapOr(0)).toBe(42);
+  });
+
+  test(".unwrapOrElse returns value without calling fn", () => {
+    const fn = vi.fn(() => 0);
+    expect(some(42).unwrapOrElse(fn)).toBe(42);
+    expect(fn).not.toHaveBeenCalled();
+  });
+});
+
+describe("None instance methods", () => {
+  test(".match calls none handler", () => {
+    expect(none().match({ some: () => "s", none: () => "n" })).toBe("n");
+  });
+
+  test(".unwrap throws", () => {
+    expect(() => none().unwrap()).toThrow("Called unwrap on None");
+  });
+
+  test(".expect throws with message", () => {
+    expect(() => none().expect("missing")).toThrow("missing");
+  });
+
+  test(".unwrapOr returns fallback", () => {
+    expect((none() as Maybe<number>).unwrapOr(99)).toBe(99);
+  });
+
+  test(".unwrapOrElse calls fn", () => {
+    expect((none() as Maybe<number>).unwrapOrElse(() => 99)).toBe(99);
+  });
+});
 
 describe("chaining", () => {
   test("some().map().flatMap().filter()", () => {

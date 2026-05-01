@@ -1,16 +1,16 @@
 import { describe, expectTypeOf, test } from "vitest";
 import {
-  type Maybe,
-  Maybe as M,
-  type None,
-  type Result,
-  type Some,
   isNone,
   isSome,
+  Maybe as M,
+  type Maybe,
+  type None,
   none,
   ok,
-  some,
   Result as R,
+  type Result,
+  type Some,
+  some,
 } from "../src/index.js";
 
 // ---------------------------------------------------------------------------
@@ -300,7 +300,7 @@ describe("Maybe.all types", () => {
 describe("Maybe.toResult types", () => {
   test("returns Result<T, E>", () => {
     function check(m: Maybe<number>) {
-      const r = M.toResult(m, new TypeError("missing"));
+      const r = M.toResult(m, () => new TypeError("missing"));
       if (r.ok) {
         expectTypeOf(r.value).toEqualTypeOf<number>();
       } else {
@@ -338,7 +338,7 @@ describe("Result.toMaybe types", () => {
 describe("Result.fromMaybe types", () => {
   test("returns Result<T, E>", () => {
     function check(m: Maybe<number>) {
-      const r = R.fromMaybe(m, new TypeError("missing"));
+      const r = R.fromMaybe(m, () => new TypeError("missing"));
       if (r.ok) {
         expectTypeOf(r.value).toEqualTypeOf<number>();
       } else {
