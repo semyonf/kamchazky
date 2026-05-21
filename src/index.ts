@@ -51,36 +51,36 @@ type TupleValues<R extends readonly AnyResult[]> = {
 };
 type TupleErrors<R extends readonly AnyResult[]> = ErrorOf<R[number]>;
 
-/** Create a successful `Result` containing `value`. */
-function ok(): OkResult<undefined>;
-function ok<T>(value: T): OkResult<T>;
-function ok<T>(value?: T): OkResult<T | undefined> {
-  const self: OkResult<T | undefined> = Object.freeze({
+function createOk<T>(value: T): OkResult<T> {
+  const self: OkResult<T> = Object.freeze({
     ok: true as const,
     value,
-    map: <U>(fn: (value: T | undefined) => U): OkResult<U> => ok(fn(value)),
+    map: <U>(fn: (value: T) => U): OkResult<U> => ok(fn(value)),
     flatMap: <U, F extends Error = never>(
-      fn: (value: T | undefined) => Result<U, F>
+      fn: (value: T) => Result<U, F>
     ): Result<U, F> => fn(value),
-    mapError: <F extends Error>(
-      _fn: (error: never) => F
-    ): OkResult<T | undefined> => self,
-    inspect: (fn: (value: T | undefined) => void): OkResult<T | undefined> => {
+    mapError: <F extends Error>(_fn: (error: never) => F): OkResult<T> => self,
+    inspect: (fn: (value: T) => void): OkResult<T> => {
       fn(value);
       return self;
     },
-    inspectError: (_fn: (error: never) => void): OkResult<T | undefined> =>
-      self,
+    inspectError: (_fn: (error: never) => void): OkResult<T> => self,
     match: <R>(handlers: {
-      ok: (value: T | undefined) => R;
+      ok: (value: T) => R;
       err: (error: never) => R;
     }): R => handlers.ok(value),
-    unwrap: (): T | undefined => value,
-    unwrapOr: (_fallback: T | undefined): T | undefined => value,
-    unwrapOrElse: (_fn: () => T | undefined): T | undefined => value,
-    expect: (_message: string): T | undefined => value,
+    unwrap: (): T => value,
+    unwrapOr: (_fallback: T): T => value,
+    unwrapOrElse: (_fn: () => T): T => value,
+    expect: (_message: string): T => value,
   });
   return self;
+}
+
+function ok(): OkResult<undefined>;
+function ok<T>(value: T): OkResult<T>;
+function ok<T>(...args: [] | [value: T]): OkResult<undefined> | OkResult<T> {
+  return args.length === 0 ? createOk(undefined) : createOk(args[0]);
 }
 
 /** Create a failed `Result` containing `error`. */
