@@ -1,5 +1,11 @@
 # @semyonf/kamchazky
 
+## 0.3.0
+
+### Minor Changes
+
+- 6da422b: Allow `Result.ok()` and `ok()` to create an `OkResult<undefined>` without passing an explicit `undefined` value.
+
 ## 0.2.0
 
 Initial public release.
