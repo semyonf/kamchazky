@@ -48,25 +48,15 @@ Union of `OkResult<T> | ErrResult<E>`.
 type OkResult<T> = {
   readonly ok: true;
   readonly value: T;
-  map<U>(fn: (value: T) => U): OkResult<U>;
-  flatMap<U, F extends Error = never>(fn: (value: T) => Result<U, F>): Result<U, F>;
-  mapError<F extends Error>(fn: (error: never) => F): OkResult<T>;
-  inspect(fn: (value: T) => void): OkResult<T>;
-  inspectError(fn: (error: never) => void): OkResult<T>;
 };
 ```
 
 #### `ErrResult<E extends Error>`
 
 ```typescript
-type ErrResult<E extends Error = Error> = {
+type ErrResult<E extends Error> = {
   readonly ok: false;
   readonly error: E;
-  map<U>(fn: (value: never) => U): ErrResult<E>;
-  flatMap<U, F extends Error = never>(fn: (value: never) => Result<U, F>): ErrResult<E>;
-  mapError<F extends Error>(fn: (error: E) => F): ErrResult<F>;
-  inspect(fn: (value: never) => void): ErrResult<E>;
-  inspectError(fn: (error: E) => void): ErrResult<E>;
 };
 ```
 
@@ -136,23 +126,11 @@ Result.inspect(result, (value) => console.log("got", value));
 Result.inspectError(result, (error) => console.error(error));
 ```
 
-All transformations are also available as instance methods for chaining:
-
-```typescript
-ok(10)
-  .inspect((x) => console.log("start:", x))
-  .map((x) => x + 5)
-  .flatMap((x) => x > 10 ? ok(x) : err(new Error("too small")))
-  .mapError((e) => new AppError(e.message))
-  .inspectError((e) => console.error(e));
-```
-
 #### Extracting values
 
 ```typescript
 Result.unwrap(result);              // returns value or throws error
 Result.unwrapOr(result, fallback);  // returns value or fallback (same type)
-Result.expect(result, "msg");       // returns value or throws with message
 ```
 
 `unwrapOr` requires the fallback to be the same type `T` as the success value. Use `match` when you need a different return type.
@@ -212,10 +190,6 @@ Union of `Some<T> | None`.
 type Some<T> = {
   readonly some: true;
   readonly value: T;
-  map<U>(fn: (value: T) => U): Some<U>;
-  flatMap<U>(fn: (value: T) => Maybe<U>): Maybe<U>;
-  filter(predicate: (value: T) => boolean): Maybe<T>;
-  inspect(fn: (value: T) => void): Some<T>;
 };
 ```
 
@@ -224,10 +198,6 @@ type Some<T> = {
 ```typescript
 type None = {
   readonly some: false;
-  map<U>(fn: (value: never) => U): None;
-  flatMap<U>(fn: (value: never) => Maybe<U>): None;
-  filter(predicate: (value: never) => boolean): None;
-  inspect(fn: (value: never) => void): None;
 };
 ```
 
@@ -271,22 +241,11 @@ Maybe.filter(maybe, (x) => x > 0);
 Maybe.inspect(maybe, (value) => console.log("got", value));
 ```
 
-All transformations are also available as instance methods for chaining:
-
-```typescript
-some(10)
-  .inspect((x) => console.log("start:", x))
-  .map((x) => x + 5)
-  .flatMap((x) => x > 10 ? some(x) : none())
-  .filter((x) => x < 100);
-```
-
 #### Extracting values
 
 ```typescript
 Maybe.unwrap(maybe);              // returns value or throws
 Maybe.unwrapOr(maybe, fallback);  // returns value or fallback (same type)
-Maybe.expect(maybe, "msg");       // returns value or throws with message
 ```
 
 #### Pattern matching
@@ -321,13 +280,13 @@ Convert between `Result` and `Maybe`:
 Result.toMaybe(ok(42));            // some(42)
 Result.toMaybe(err(new Error())); // none()
 
-// Maybe → Result (requires an error for the None case)
-Result.fromMaybe(some(42), new Error("missing")); // ok(42)
-Result.fromMaybe(none(), new Error("missing"));   // err(Error("missing"))
+// Maybe → Result (requires an error factory for the None case)
+Result.fromMaybe(some(42), () => new Error("missing")); // ok(42)
+Result.fromMaybe(none(), () => new Error("missing"));   // err(Error("missing"))
 
 // Same operations from the Maybe side
-Maybe.fromResult(ok(42));                          // some(42)
-Maybe.toResult(some(42), new Error("missing"));    // ok(42)
+Maybe.fromResult(ok(42));                                  // some(42)
+Maybe.toResult(some(42), () => new Error("missing"));     // ok(42)
 ```
 
 ---

@@ -106,76 +106,6 @@ describe("isOk / isErr narrowing", () => {
 // Instance method return types
 // ---------------------------------------------------------------------------
 
-describe("OkResult method return types", () => {
-  test(".map returns OkResult<U>", () => {
-    expectTypeOf(ok(1).map(String)).toEqualTypeOf<OkResult<string>>();
-  });
-
-  test(".flatMap to Ok preserves structure", () => {
-    const r = ok(1).flatMap((x) => ok(String(x)));
-    if (r.ok) {
-      expectTypeOf(r.value).toEqualTypeOf<string>();
-    }
-  });
-
-  test(".flatMap to Err widens error type", () => {
-    const r = ok(1).flatMap(
-      (_x): Result<string, TypeError> => err(new TypeError())
-    );
-    if (!r.ok) {
-      expectTypeOf(r.error).toEqualTypeOf<TypeError>();
-    }
-  });
-
-  test(".mapError is identity on OkResult", () => {
-    expectTypeOf(ok(1).mapError(() => new TypeError())).toEqualTypeOf<
-      OkResult<number>
-    >();
-  });
-
-  test(".inspect returns OkResult<T>", () => {
-    expectTypeOf(ok(1).inspect(() => {})).toEqualTypeOf<OkResult<number>>();
-  });
-
-  test(".inspectError returns OkResult<T>", () => {
-    expectTypeOf(ok(1).inspectError(() => {})).toEqualTypeOf<
-      OkResult<number>
-    >();
-  });
-});
-
-describe("ErrResult method return types", () => {
-  test(".map returns ErrResult<E>", () => {
-    expectTypeOf(err(new TypeError()).map(() => 42)).toEqualTypeOf<
-      ErrResult<TypeError>
-    >();
-  });
-
-  test(".flatMap returns ErrResult<E>", () => {
-    expectTypeOf(err(new TypeError()).flatMap(() => ok(42))).toEqualTypeOf<
-      ErrResult<TypeError>
-    >();
-  });
-
-  test(".mapError returns ErrResult<F>", () => {
-    expectTypeOf(
-      err(new Error()).mapError((e) => new TypeError(e.message))
-    ).toEqualTypeOf<ErrResult<TypeError>>();
-  });
-
-  test(".inspect returns ErrResult<E>", () => {
-    expectTypeOf(err(new TypeError()).inspect(() => {})).toEqualTypeOf<
-      ErrResult<TypeError>
-    >();
-  });
-
-  test(".inspectError returns ErrResult<E>", () => {
-    expectTypeOf(err(new TypeError()).inspectError(() => {})).toEqualTypeOf<
-      ErrResult<TypeError>
-    >();
-  });
-});
-
 // ---------------------------------------------------------------------------
 // Standalone function types — use function params to prevent narrowing
 // ---------------------------------------------------------------------------
@@ -548,9 +478,6 @@ describe("Result.exhaustive types", () => {
 });
 
 // ---------------------------------------------------------------------------
-// unwrap / unwrapOr / expect
-// ---------------------------------------------------------------------------
-
 describe("extraction types", () => {
   test("unwrap returns T", () => {
     function check(r: Result<number, Error>) {
@@ -564,20 +491,5 @@ describe("extraction types", () => {
       expectTypeOf(Result.unwrapOr(r, 0)).toEqualTypeOf<number>();
     }
     check(ok(1));
-  });
-
-  test("expect returns T", () => {
-    function check(r: Result<number, Error>) {
-      expectTypeOf(Result.expect(r, "msg")).toEqualTypeOf<number>();
-    }
-    check(ok(1));
-  });
-
-  test("instance unwrapOr returns T", () => {
-    expectTypeOf(ok(1).unwrapOr(0)).toEqualTypeOf<number>();
-  });
-
-  test("instance unwrapOrElse returns T", () => {
-    expectTypeOf(ok(1).unwrapOrElse(() => 0)).toEqualTypeOf<number>();
   });
 });

@@ -2,42 +2,18 @@
 export type OkResult<T> = {
   readonly ok: true;
   readonly value: T;
-  map<U>(fn: (value: T) => U): OkResult<U>;
-  flatMap<U, F extends Error = never>(
-    fn: (value: T) => Result<U, F>
-  ): Result<U, F>;
-  mapError<F extends Error>(fn: (error: never) => F): OkResult<T>;
-  inspect(fn: (value: T) => void): OkResult<T>;
-  inspectError(fn: (error: never) => void): OkResult<T>;
-  match<R>(handlers: { ok: (value: T) => R; err: (error: never) => R }): R;
-  unwrap(): T;
-  unwrapOr(fallback: T): T;
-  unwrapOrElse(fn: () => T): T;
-  expect(message: string): T;
 };
 
 /** A failed result containing an error of type `E`. */
 export type ErrResult<E extends Error = Error> = {
   readonly ok: false;
   readonly error: E;
-  map<U>(fn: (value: never) => U): ErrResult<E>;
-  flatMap<U, F extends Error = never>(
-    fn: (value: never) => Result<U, F>
-  ): ErrResult<E>;
-  mapError<F extends Error>(fn: (error: E) => F): ErrResult<F>;
-  inspect(fn: (value: never) => void): ErrResult<E>;
-  inspectError(fn: (error: E) => void): ErrResult<E>;
-  match<R>(handlers: { ok: (value: never) => R; err: (error: E) => R }): R;
-  unwrap(): never;
-  unwrapOr<T>(fallback: T): T;
-  unwrapOrElse<T>(fn: () => T): T;
-  expect(message: string): never;
 };
 
 /**
  * A value that is either a success (`OkResult<T>`) or a failure
- * (`ErrResult<E>`).  Use `Result.ok` / `Result.err` to construct, and the
- * companion `Result.*` functions or instance methods to transform.
+ * (`ErrResult<E>`). Use `Result.ok` / `Result.err` to construct, and the
+ * companion `Result.*` functions to transform.
  */
 export type Result<T, E extends Error = Error> = OkResult<T> | ErrResult<E>;
 
@@ -52,29 +28,10 @@ type TupleValues<R extends readonly AnyResult[]> = {
 type TupleErrors<R extends readonly AnyResult[]> = ErrorOf<R[number]>;
 
 function createOk<T>(value: T): OkResult<T> {
-  const self: OkResult<T> = Object.freeze({
+  return Object.freeze({
     ok: true as const,
     value,
-    map: <U>(fn: (value: T) => U): OkResult<U> => ok(fn(value)),
-    flatMap: <U, F extends Error = never>(
-      fn: (value: T) => Result<U, F>
-    ): Result<U, F> => fn(value),
-    mapError: <F extends Error>(_fn: (error: never) => F): OkResult<T> => self,
-    inspect: (fn: (value: T) => void): OkResult<T> => {
-      fn(value);
-      return self;
-    },
-    inspectError: (_fn: (error: never) => void): OkResult<T> => self,
-    match: <R>(handlers: {
-      ok: (value: T) => R;
-      err: (error: never) => R;
-    }): R => handlers.ok(value),
-    unwrap: (): T => value,
-    unwrapOr: (_fallback: T): T => value,
-    unwrapOrElse: (_fn: () => T): T => value,
-    expect: (_message: string): T => value,
   });
-  return self;
 }
 
 function ok(): OkResult<undefined>;
@@ -85,39 +42,10 @@ function ok<T>(...args: [] | [value: T]): OkResult<undefined> | OkResult<T> {
 
 /** Create a failed `Result` containing `error`. */
 function err<E extends Error>(error: E): ErrResult<E> {
-  const self: ErrResult<E> = Object.freeze({
+  return Object.freeze({
     ok: false as const,
     error,
-    map: <U>(_fn: (value: never) => U): ErrResult<E> => self,
-    flatMap: <U, F extends Error = never>(
-      _fn: (value: never) => Result<U, F>
-    ): ErrResult<E> => self,
-    mapError: <F extends Error>(fn: (error: E) => F): ErrResult<F> =>
-      err(fn(error)),
-    inspect: (_fn: (value: never) => void): ErrResult<E> => self,
-    inspectError: (fn: (error: E) => void): ErrResult<E> => {
-      fn(error);
-      return self;
-    },
-    match: <R>(handlers: {
-      ok: (value: never) => R;
-      err: (error: E) => R;
-    }): R => handlers.err(error),
-    unwrap: (): never => {
-      throw error;
-    },
-    unwrapOr: <T>(fallback: T): T => fallback,
-    unwrapOrElse: <T>(fn: () => T): T => fn(),
-    expect: (message: string): never => {
-      const thrown = new Error(`${message}: ${error.message}`, {
-        cause: error,
-      });
-      Object.setPrototypeOf(thrown, error.constructor.prototype);
-      if (error.stack !== undefined) thrown.stack = error.stack;
-      throw thrown;
-    },
   });
-  return self;
 }
 
 /** Narrow a `Result` to `OkResult`. */
@@ -198,10 +126,7 @@ function flatMap<T, U, E extends Error, F extends Error = never>(
   fn: (value: T) => Result<U, F>
 ): Result<U, E | F> {
   if (result.ok) return fn(result.value);
-  // Safe: ErrResult<E> ⊆ Result<U, E | F>  — error type is widened, value
-  // channel is unused.  The assertion is needed because ErrResult's methods
-  // make E invariant in TypeScript's structural checker.
-  return result as ErrResult<E | F>;
+  return result;
 }
 
 /**
@@ -213,8 +138,7 @@ function orElse<T, E extends Error, F extends Error>(
   fn: (error: E) => Result<T, F>
 ): Result<T, F> {
   if (!result.ok) return fn(result.error);
-  // Safe: OkResult<T> ⊆ Result<T, F> — same variance pattern as flatMap.
-  return result as OkResult<T>;
+  return result;
 }
 
 /**
@@ -232,8 +156,7 @@ function flatMapErr<T, E extends Error, F extends Error>(
 function flatten<T, E extends Error, F extends Error>(
   result: Result<Result<T, E>, F>
 ): Result<T, E | F> {
-  // Safe: both branches widen the error type — same variance pattern as flatMap.
-  return (result.ok ? result.value : result) as Result<T, E | F>;
+  return result.ok ? result.value : result;
 }
 
 /** Exhaustively handle both `Ok` and `Err` branches, returning `R`. */
@@ -279,23 +202,12 @@ function unwrapOrElse<T, E extends Error>(
   return result.ok ? result.value : fn();
 }
 
-/** Return the `Ok` value or throw with a custom `message`. */
-function expect<T, E extends Error>(result: Result<T, E>, message: string): T {
-  if (result.ok) return result.value;
-  const thrown = new Error(`${message}: ${result.error.message}`, {
-    cause: result.error,
-  });
-  Object.setPrototypeOf(thrown, result.error.constructor.prototype);
-  if (result.error.stack !== undefined) thrown.stack = result.error.stack;
-  throw thrown;
-}
-
 /** Convert a nullable value to a `Result`. */
 function fromNullable<T, E extends Error>(
   value: T | null | undefined,
   errorFactory: () => E
 ): Result<NonNullable<T>, E> {
-  return value != null ? ok(value as NonNullable<T>) : err(errorFactory());
+  return value != null ? ok(value) : err(errorFactory());
 }
 
 /** Convert a predicate check to a `Result`.  Supports type-guard predicates. */
@@ -509,35 +421,17 @@ function collect<const R extends readonly AnyResult[]>(
 export type Some<T> = {
   readonly some: true;
   readonly value: T;
-  map<U>(fn: (value: T) => U): Some<U>;
-  flatMap<U>(fn: (value: T) => Maybe<U>): Maybe<U>;
-  filter(predicate: (value: T) => boolean): Maybe<T>;
-  inspect(fn: (value: T) => void): Some<T>;
-  match<R>(handlers: { some: (value: T) => R; none: () => R }): R;
-  unwrap(): T;
-  expect(message: string): T;
-  unwrapOr(fallback: T): T;
-  unwrapOrElse(fn: () => T): T;
 };
 
 /** A `Maybe` that contains no value. */
 export type None = {
   readonly some: false;
-  map<U>(fn: (value: never) => U): None;
-  flatMap<U>(fn: (value: never) => Maybe<U>): None;
-  filter(predicate: (value: never) => boolean): None;
-  inspect(fn: (value: never) => void): None;
-  match<R>(handlers: { some: (value: never) => R; none: () => R }): R;
-  unwrap(): never;
-  expect(message: string): never;
-  unwrapOr<T>(fallback: T): T;
-  unwrapOrElse<T>(fn: () => T): T;
 };
 
 /**
  * A value that is either present (`Some<T>`) or absent (`None`).
  * Use `Maybe.some` / `Maybe.none` to construct, and the companion `Maybe.*`
- * functions or instance methods to transform.
+ * functions to transform.
  */
 export type Maybe<T> = Some<T> | None;
 
@@ -551,43 +445,14 @@ type TupleMaybeValues<M extends readonly AnyMaybe[]> = {
 
 /** Create a `Maybe` containing `value`. */
 function some<T>(value: T): Some<T> {
-  const self: Some<T> = Object.freeze({
+  return Object.freeze({
     some: true as const,
     value,
-    map: <U>(fn: (value: T) => U): Some<U> => some(fn(value)),
-    flatMap: <U>(fn: (value: T) => Maybe<U>): Maybe<U> => fn(value),
-    filter: (predicate: (value: T) => boolean): Maybe<T> =>
-      predicate(value) ? self : NONE,
-    inspect: (fn: (value: T) => void): Some<T> => {
-      fn(value);
-      return self;
-    },
-    match: <R>(handlers: { some: (value: T) => R; none: () => R }): R =>
-      handlers.some(value),
-    unwrap: (): T => value,
-    expect: (_message: string): T => value,
-    unwrapOr: (_fallback: T): T => value,
-    unwrapOrElse: (_fn: () => T): T => value,
   });
-  return self;
 }
 
 const NONE: None = Object.freeze({
   some: false as const,
-  map: <U>(_fn: (value: never) => U): None => NONE,
-  flatMap: <U>(_fn: (value: never) => Maybe<U>): None => NONE,
-  filter: (_predicate: (value: never) => boolean): None => NONE,
-  inspect: (_fn: (value: never) => void): None => NONE,
-  match: <R>(handlers: { some: (value: never) => R; none: () => R }): R =>
-    handlers.none(),
-  unwrap: (): never => {
-    throw new Error("Called unwrap on None");
-  },
-  expect: (message: string): never => {
-    throw new Error(message);
-  },
-  unwrapOr: <T>(fallback: T): T => fallback,
-  unwrapOrElse: <T>(fn: () => T): T => fn(),
 });
 
 /** Create an empty `Maybe`. */
@@ -678,17 +543,11 @@ function maybeUnwrapOrElse<T>(maybe: Maybe<T>, fn: () => T): T {
   return maybe.some ? maybe.value : fn();
 }
 
-/** Return the `Some` value or throw with a custom `message`. */
-function maybeExpect<T>(maybe: Maybe<T>, message: string): T {
-  if (maybe.some) return maybe.value;
-  throw new Error(message);
-}
-
 /** Convert a nullable value to a `Maybe`. */
 function maybeFromNullable<T>(
   value: T | null | undefined
 ): Maybe<NonNullable<T>> {
-  return value != null ? some(value as NonNullable<T>) : NONE;
+  return value != null ? some(value) : NONE;
 }
 
 /** Convert a predicate check to a `Maybe`.  Supports type-guard predicates. */
@@ -800,7 +659,7 @@ function resultFromMaybe<T, E extends Error>(
 function resultTranspose<T, E extends Error>(
   result: Result<Maybe<T>, E>
 ): Maybe<Result<T, E>> {
-  if (!result.ok) return some(result as ErrResult<E>);
+  if (!result.ok) return some(result);
   if (result.value.some) return some(ok(result.value.value));
   return NONE;
 }
@@ -809,9 +668,9 @@ function resultTranspose<T, E extends Error>(
 function maybeTranspose<T, E extends Error>(
   maybe: Maybe<Result<T, E>>
 ): Result<Maybe<T>, E> {
-  if (!maybe.some) return ok(NONE) as OkResult<Maybe<T>>;
+  if (!maybe.some) return ok(NONE);
   if (maybe.value.ok) return ok(some(maybe.value.value));
-  return err(maybe.value.error) as ErrResult<E>;
+  return err(maybe.value.error);
 }
 
 export const Maybe = {
@@ -828,7 +687,6 @@ export const Maybe = {
   unwrap: maybeUnwrap,
   unwrapOr: maybeUnwrapOr,
   unwrapOrElse: maybeUnwrapOrElse,
-  expect: maybeExpect,
   fromNullable: maybeFromNullable,
   fromPredicate: maybeFromPredicate,
   all: maybeAll,
@@ -838,7 +696,7 @@ export const Maybe = {
   toResult: maybeToResult,
   fromResult: maybeFromResult,
   transpose: maybeTranspose,
-} as const satisfies Record<string, (...args: never[]) => unknown>;
+} as const;
 
 // Add interop to Result namespace
 export const Result = {
@@ -859,7 +717,6 @@ export const Result = {
   unwrap,
   unwrapOr,
   unwrapOrElse,
-  expect,
   fromNullable,
   fromPredicate,
   normalizeError,
@@ -873,6 +730,6 @@ export const Result = {
   toMaybe: resultToMaybe,
   fromMaybe: resultFromMaybe,
   transpose: resultTranspose,
-} as const satisfies Record<string, (...args: never[]) => unknown>;
+} as const;
 
 export { err, isErr, isNone, isOk, isSome, none, normalizeError, ok, some };

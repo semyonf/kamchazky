@@ -87,43 +87,6 @@ describe("isSome / isNone narrowing", () => {
 // Instance method return types
 // ---------------------------------------------------------------------------
 
-describe("Some method return types", () => {
-  test(".map returns Some<U>", () => {
-    expectTypeOf(some(1).map(String)).toEqualTypeOf<Some<string>>();
-  });
-
-  test(".flatMap returns Maybe<U>", () => {
-    const m = some(1).flatMap((x) => some(String(x)));
-    expectTypeOf(m).toEqualTypeOf<Maybe<string>>();
-  });
-
-  test(".filter returns Maybe<T>", () => {
-    expectTypeOf(some(1).filter((x) => x > 0)).toEqualTypeOf<Maybe<number>>();
-  });
-
-  test(".inspect returns Some<T>", () => {
-    expectTypeOf(some(1).inspect(() => {})).toEqualTypeOf<Some<number>>();
-  });
-});
-
-describe("None method return types", () => {
-  test(".map returns None", () => {
-    expectTypeOf(none().map(() => 42)).toEqualTypeOf<None>();
-  });
-
-  test(".flatMap returns None", () => {
-    expectTypeOf(none().flatMap(() => some(42))).toEqualTypeOf<None>();
-  });
-
-  test(".filter returns None", () => {
-    expectTypeOf(none().filter(() => true)).toEqualTypeOf<None>();
-  });
-
-  test(".inspect returns None", () => {
-    expectTypeOf(none().inspect(() => {})).toEqualTypeOf<None>();
-  });
-});
-
 // ---------------------------------------------------------------------------
 // Standalone function types
 // ---------------------------------------------------------------------------
@@ -222,13 +185,6 @@ describe("extraction types", () => {
   test("unwrapOr returns T", () => {
     function check(m: Maybe<number>) {
       expectTypeOf(M.unwrapOr(m, 0)).toEqualTypeOf<number>();
-    }
-    check(some(1));
-  });
-
-  test("expect returns T", () => {
-    function check(m: Maybe<number>) {
-      expectTypeOf(M.expect(m, "msg")).toEqualTypeOf<number>();
     }
     check(some(1));
   });

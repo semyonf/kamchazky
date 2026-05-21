@@ -1,13 +1,11 @@
 import { describe, expect, test, vi } from "vitest";
 import {
-  type ErrResult,
   err,
   isErr,
   isOk,
   type Maybe,
   none,
   normalizeError,
-  type OkResult,
   ok,
   Result,
   some,
@@ -79,90 +77,6 @@ describe("isOk / isErr", () => {
 
   test("isErr returns false for Ok", () => {
     expect(isErr(ok(1))).toBe(false);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Instance methods
-// ---------------------------------------------------------------------------
-
-describe("OkResult methods", () => {
-  test(".map transforms the value", () => {
-    const r = ok(2).map((x) => x * 3);
-    expect(r.ok).toBe(true);
-    expect((r as OkResult<number>).value).toBe(6);
-  });
-
-  test(".flatMap chains to a new Result", () => {
-    const r = ok(5).flatMap((x) => ok(x + 1));
-    expect(r.ok).toBe(true);
-    expect((r as OkResult<number>).value).toBe(6);
-  });
-
-  test(".flatMap chains to an Err", () => {
-    const r = ok(5).flatMap(() => err(new Error("nope")));
-    expect(r.ok).toBe(false);
-    expect((r as ErrResult).error.message).toBe("nope");
-  });
-
-  test(".mapError is a no-op", () => {
-    const r = ok(42);
-    const mapped = r.mapError(() => new TypeError("ignored"));
-    expect(mapped).toBe(r);
-  });
-
-  test(".inspect calls fn and returns self", () => {
-    const spy = vi.fn();
-    const r = ok(42);
-    const returned = r.inspect(spy);
-    expect(spy).toHaveBeenCalledWith(42);
-    expect(returned).toBe(r);
-  });
-
-  test(".inspectError is a no-op", () => {
-    const spy = vi.fn();
-    const r = ok(42);
-    expect(r.inspectError(spy)).toBe(r);
-    expect(spy).not.toHaveBeenCalled();
-  });
-});
-
-describe("ErrResult methods", () => {
-  test(".map is a no-op", () => {
-    const r = err(new Error("e"));
-    const mapped = r.map(() => 99);
-    expect(mapped).toBe(r);
-  });
-
-  test(".flatMap is a no-op", () => {
-    const r = err(new Error("e"));
-    const chained = r.flatMap(() => ok(99));
-    expect(chained).toBe(r);
-  });
-
-  test(".mapError transforms the error", () => {
-    const r = err(new Error("old")).mapError(
-      (e) => new TypeError(`${e.message}!`)
-    );
-    expect(r.ok).toBe(false);
-    expect(r.error).toBeInstanceOf(TypeError);
-    expect(r.error.message).toBe("old!");
-  });
-
-  test(".inspect is a no-op", () => {
-    const spy = vi.fn();
-    const r = err(new Error("e"));
-    expect(r.inspect(spy)).toBe(r);
-    expect(spy).not.toHaveBeenCalled();
-  });
-
-  test(".inspectError calls fn and returns self", () => {
-    const e = new Error("e");
-    const spy = vi.fn();
-    const r = err(e);
-    const returned = r.inspectError(spy);
-    expect(spy).toHaveBeenCalledWith(e);
-    expect(returned).toBe(r);
   });
 });
 
@@ -408,48 +322,6 @@ describe("Result.transpose", () => {
     if (r.some) {
       expect(r.value.ok).toBe(false);
       if (!r.value.ok) expect(r.value.error).toBe(e);
-    }
-  });
-});
-
-describe("Result.expect", () => {
-  test("returns value for Ok", () => {
-    expect(Result.expect(ok(42), "should be ok")).toBe(42);
-  });
-
-  test("throws with custom message for Err", () => {
-    expect(() => Result.expect(err(new Error("inner")), "outer")).toThrow(
-      "outer: inner"
-    );
-  });
-
-  test("thrown error has cause", () => {
-    const original = new Error("cause");
-    try {
-      Result.expect(err(original), "msg");
-      expect.unreachable();
-    } catch (e) {
-      expect((e as Error).cause).toBe(original);
-    }
-  });
-
-  test("preserves error prototype (TypeError)", () => {
-    try {
-      Result.expect(err(new TypeError("inner")), "msg");
-      expect.unreachable();
-    } catch (e) {
-      expect(e).toBeInstanceOf(TypeError);
-      expect(e).toBeInstanceOf(Error);
-      expect((e as Error).message).toBe("msg: inner");
-    }
-  });
-
-  test("preserves error prototype (RangeError)", () => {
-    try {
-      Result.expect(err(new RangeError("inner")), "msg");
-      expect.unreachable();
-    } catch (e) {
-      expect(e).toBeInstanceOf(RangeError);
     }
   });
 });
@@ -897,84 +769,3 @@ describe("Result.collect", () => {
 // ---------------------------------------------------------------------------
 // Method chaining
 // ---------------------------------------------------------------------------
-
-describe("OkResult instance methods", () => {
-  test(".match calls ok handler", () => {
-    expect(ok(42).match({ ok: (v) => v * 2, err: () => -1 })).toBe(84);
-  });
-
-  test(".unwrap returns value", () => {
-    expect(ok(42).unwrap()).toBe(42);
-  });
-
-  test(".expect returns value", () => {
-    expect(ok(42).expect("should be ok")).toBe(42);
-  });
-
-  test(".unwrapOr returns value", () => {
-    expect(ok(42).unwrapOr(0)).toBe(42);
-  });
-
-  test(".unwrapOrElse returns value without calling fn", () => {
-    const fn = vi.fn(() => 0);
-    expect(ok(42).unwrapOrElse(fn)).toBe(42);
-    expect(fn).not.toHaveBeenCalled();
-  });
-});
-
-describe("ErrResult instance methods", () => {
-  test(".match calls err handler", () => {
-    expect(
-      err(new Error("e")).match({ ok: () => "ok", err: (e) => e.message })
-    ).toBe("e");
-  });
-
-  test(".unwrap throws", () => {
-    const e = new Error("boom");
-    expect(() => err(e).unwrap()).toThrow(e);
-  });
-
-  test(".expect throws with prototype preservation", () => {
-    try {
-      err(new TypeError("inner")).expect("msg");
-      expect.unreachable();
-    } catch (e) {
-      expect(e).toBeInstanceOf(TypeError);
-    }
-  });
-
-  test(".unwrapOr returns fallback", () => {
-    expect(err(new Error()).unwrapOr(99)).toBe(99);
-  });
-
-  test(".unwrapOrElse calls fn", () => {
-    expect(err(new Error()).unwrapOrElse(() => 99)).toBe(99);
-  });
-});
-
-describe("chaining", () => {
-  test("ok().map().flatMap().mapError()", () => {
-    const r = ok(10)
-      .map((x) => x + 5)
-      .flatMap((x) => (x > 10 ? ok(x) : err(new Error("too small"))))
-      .mapError((e) => new TypeError(e.message));
-    expect(r.ok && r.value).toBe(15);
-  });
-
-  test("err short-circuits through chain", () => {
-    const original = new Error("original");
-    const r = err(original)
-      .map(() => 99)
-      .flatMap(() => ok(100));
-    expect(!r.ok && r.error).toBe(original);
-  });
-
-  test("inspect chains without transforming", () => {
-    const spy = vi.fn();
-    const r = ok(10)
-      .inspect(spy)
-      .map((x) => x + 1);
-    expect(spy).toHaveBeenCalledWith(10);
-    expect(r.ok && r.value).toBe(11);
-  });
-});

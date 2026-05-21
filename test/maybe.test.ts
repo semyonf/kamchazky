@@ -7,7 +7,6 @@ import {
   type Maybe,
   none,
   ok,
-  type Some,
   some,
 } from "../src/index.js";
 
@@ -73,75 +72,6 @@ describe("isSome / isNone", () => {
 
   test("isNone returns false for Some", () => {
     expect(isNone(some(1))).toBe(false);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Instance methods
-// ---------------------------------------------------------------------------
-
-describe("Some methods", () => {
-  test(".map transforms the value", () => {
-    const m = some(2).map((x) => x * 3);
-    expect(m.some).toBe(true);
-    expect(m.value).toBe(6);
-  });
-
-  test(".flatMap chains to a new Maybe", () => {
-    const m = some(5).flatMap((x) => some(x + 1));
-    expect(m.some).toBe(true);
-    expect((m as Some<number>).value).toBe(6);
-  });
-
-  test(".flatMap chains to None", () => {
-    const m = some(5).flatMap(() => none());
-    expect(m.some).toBe(false);
-  });
-
-  test(".filter keeps value when predicate passes", () => {
-    const m = some(5).filter((x) => x > 0);
-    expect(m.some).toBe(true);
-    expect((m as Some<number>).value).toBe(5);
-  });
-
-  test(".filter returns None when predicate fails", () => {
-    const m = some(5).filter((x) => x > 10);
-    expect(m.some).toBe(false);
-  });
-
-  test(".inspect calls fn and returns self", () => {
-    const spy = vi.fn();
-    const m = some(42);
-    const returned = m.inspect(spy);
-    expect(spy).toHaveBeenCalledWith(42);
-    expect(returned).toBe(m);
-  });
-});
-
-describe("None methods", () => {
-  test(".map is a no-op", () => {
-    const m = none();
-    const mapped = m.map(() => 99);
-    expect(mapped).toBe(m);
-  });
-
-  test(".flatMap is a no-op", () => {
-    const m = none();
-    const chained = m.flatMap(() => some(99));
-    expect(chained).toBe(m);
-  });
-
-  test(".filter is a no-op", () => {
-    const m = none();
-    const filtered = m.filter(() => true);
-    expect(filtered).toBe(m);
-  });
-
-  test(".inspect is a no-op", () => {
-    const spy = vi.fn();
-    const m = none();
-    expect(m.inspect(spy)).toBe(m);
-    expect(spy).not.toHaveBeenCalled();
   });
 });
 
@@ -324,16 +254,6 @@ describe("Maybe.transpose", () => {
     if (m.ok) {
       expect(m.value.some).toBe(false);
     }
-  });
-});
-
-describe("Maybe.expect", () => {
-  test("returns value for Some", () => {
-    expect(M.expect(some(42), "should exist")).toBe(42);
-  });
-
-  test("throws with custom message for None", () => {
-    expect(() => M.expect(none(), "missing value")).toThrow("missing value");
   });
 });
 
@@ -533,77 +453,5 @@ describe("Result.fromMaybe", () => {
     const factory = vi.fn(() => new Error("missing"));
     Result.fromMaybe(some(42), factory);
     expect(factory).not.toHaveBeenCalled();
-  });
-});
-
-describe("Some instance methods", () => {
-  test(".match calls some handler", () => {
-    expect(some(42).match({ some: (v) => v * 2, none: () => -1 })).toBe(84);
-  });
-
-  test(".unwrap returns value", () => {
-    expect(some(42).unwrap()).toBe(42);
-  });
-
-  test(".expect returns value", () => {
-    expect(some(42).expect("should exist")).toBe(42);
-  });
-
-  test(".unwrapOr returns value", () => {
-    expect(some(42).unwrapOr(0)).toBe(42);
-  });
-
-  test(".unwrapOrElse returns value without calling fn", () => {
-    const fn = vi.fn(() => 0);
-    expect(some(42).unwrapOrElse(fn)).toBe(42);
-    expect(fn).not.toHaveBeenCalled();
-  });
-});
-
-describe("None instance methods", () => {
-  test(".match calls none handler", () => {
-    expect(none().match({ some: () => "s", none: () => "n" })).toBe("n");
-  });
-
-  test(".unwrap throws", () => {
-    expect(() => none().unwrap()).toThrow("Called unwrap on None");
-  });
-
-  test(".expect throws with message", () => {
-    expect(() => none().expect("missing")).toThrow("missing");
-  });
-
-  test(".unwrapOr returns fallback", () => {
-    expect((none() as Maybe<number>).unwrapOr(99)).toBe(99);
-  });
-
-  test(".unwrapOrElse calls fn", () => {
-    expect((none() as Maybe<number>).unwrapOrElse(() => 99)).toBe(99);
-  });
-});
-
-describe("chaining", () => {
-  test("some().map().flatMap().filter()", () => {
-    const m = some(10)
-      .map((x) => x + 5)
-      .flatMap((x) => (x > 10 ? some(x) : none()))
-      .filter((x) => x < 100);
-    expect(m.some && m.value).toBe(15);
-  });
-
-  test("none short-circuits through chain", () => {
-    const m = none()
-      .map(() => 99)
-      .flatMap(() => some(100));
-    expect(m.some).toBe(false);
-  });
-
-  test("inspect chains without transforming", () => {
-    const spy = vi.fn();
-    const m = some(10)
-      .inspect(spy)
-      .map((x) => x + 1);
-    expect(spy).toHaveBeenCalledWith(10);
-    expect(m.some && m.value).toBe(11);
   });
 });
