@@ -52,28 +52,33 @@ type TupleValues<R extends readonly AnyResult[]> = {
 type TupleErrors<R extends readonly AnyResult[]> = ErrorOf<R[number]>;
 
 /** Create a successful `Result` containing `value`. */
-function ok<T>(value: T): OkResult<T> {
-  const self: OkResult<T> = Object.freeze({
+function ok(): OkResult<undefined>;
+function ok<T>(value: T): OkResult<T>;
+function ok<T>(value?: T): OkResult<T | undefined> {
+  const self: OkResult<T | undefined> = Object.freeze({
     ok: true as const,
     value,
-    map: <U>(fn: (value: T) => U): OkResult<U> => ok(fn(value)),
+    map: <U>(fn: (value: T | undefined) => U): OkResult<U> => ok(fn(value)),
     flatMap: <U, F extends Error = never>(
-      fn: (value: T) => Result<U, F>
+      fn: (value: T | undefined) => Result<U, F>
     ): Result<U, F> => fn(value),
-    mapError: <F extends Error>(_fn: (error: never) => F): OkResult<T> => self,
-    inspect: (fn: (value: T) => void): OkResult<T> => {
+    mapError: <F extends Error>(
+      _fn: (error: never) => F
+    ): OkResult<T | undefined> => self,
+    inspect: (fn: (value: T | undefined) => void): OkResult<T | undefined> => {
       fn(value);
       return self;
     },
-    inspectError: (_fn: (error: never) => void): OkResult<T> => self,
+    inspectError: (_fn: (error: never) => void): OkResult<T | undefined> =>
+      self,
     match: <R>(handlers: {
-      ok: (value: T) => R;
+      ok: (value: T | undefined) => R;
       err: (error: never) => R;
     }): R => handlers.ok(value),
-    unwrap: (): T => value,
-    unwrapOr: (_fallback: T): T => value,
-    unwrapOrElse: (_fn: () => T): T => value,
-    expect: (_message: string): T => value,
+    unwrap: (): T | undefined => value,
+    unwrapOr: (_fallback: T | undefined): T | undefined => value,
+    unwrapOrElse: (_fn: () => T | undefined): T | undefined => value,
+    expect: (_message: string): T | undefined => value,
   });
   return self;
 }

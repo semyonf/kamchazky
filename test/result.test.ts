@@ -33,6 +33,12 @@ describe("ok", () => {
     expect(r.ok).toBe(true);
     expect(r.value).toBe(undefined);
   });
+
+  test("works with an omitted value", () => {
+    const r = ok();
+    expect(r.ok).toBe(true);
+    expect(r.value).toBe(undefined);
+  });
 });
 
 describe("err", () => {
@@ -580,8 +586,8 @@ describe("Result.normalizeError", () => {
   });
 
   test("handles circular references via String fallback", () => {
-    const obj: Record<string, unknown> = {};
-    obj["self"] = obj;
+    const obj: { self?: unknown } = {};
+    obj.self = obj;
     const e = normalizeError(obj);
     expect(e).toBeInstanceOf(Error);
     // JSON.stringify throws on circular; falls back to String which gives

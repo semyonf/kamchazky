@@ -23,6 +23,18 @@ describe("ok / err return types", () => {
     expectTypeOf(ok("hello")).toEqualTypeOf<OkResult<string>>();
   });
 
+  test("ok() → OkResult<undefined>", () => {
+    expectTypeOf(ok()).toEqualTypeOf<OkResult<undefined>>();
+    expectTypeOf(Result.ok()).toEqualTypeOf<OkResult<undefined>>();
+  });
+
+  test("ok<T>() requires a value", () => {
+    // @ts-expect-error ok<T>() requires a value argument
+    ok<number>();
+    // @ts-expect-error Result.ok<T>() requires a value argument
+    Result.ok<number>();
+  });
+
   test("err(new TypeError()) → ErrResult<TypeError>", () => {
     expectTypeOf(err(new TypeError())).toEqualTypeOf<ErrResult<TypeError>>();
   });

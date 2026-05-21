@@ -79,6 +79,7 @@ All functions are available on the `Result` namespace and the most common ones (
 ```typescript
 // From values
 Result.ok(42);                    // OkResult<number>
+Result.ok();                      // OkResult<undefined>
 Result.err(new Error("fail"));    // ErrResult<Error>
 
 // From nullable values
