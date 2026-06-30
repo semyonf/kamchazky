@@ -696,6 +696,11 @@ export const Maybe = {
   toResult: maybeToResult,
   fromResult: maybeFromResult,
   transpose: maybeTranspose,
+  // `as const` without `satisfies Record<string, Function>`: the namespace is a
+  // small, static, hand-maintained list of named function references — the
+  // function-only invariant is obvious from inspection and enforced by code
+  // review. Adding `satisfies` would guard a near-zero-probability mistake that
+  // TypeScript would catch at every call site anyway, for no consumer benefit.
 } as const;
 
 // Add interop to Result namespace
@@ -730,6 +735,7 @@ export const Result = {
   toMaybe: resultToMaybe,
   fromMaybe: resultFromMaybe,
   transpose: resultTranspose,
+  // See comment on Maybe above.
 } as const;
 
 export { err, isErr, isNone, isOk, isSome, none, normalizeError, ok, some };
