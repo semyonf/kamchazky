@@ -27,17 +27,23 @@ The rule ships from the kamchazky package so it travels with the monad.
   (namespace `kamchazky`), alongside the existing `edenex` plugin, enabled as
   `kamchazky/must-use-result: "error"`.
 
-## Detection (type-based)
+## Detection (type-based, structural)
 
-Use `ESLintUtils.getParserServices` and the TS type checker. A type is a
-kamchazky `Result` iff:
+Use `ESLintUtils.getParserServices` and the TS type checker. A type is
+`Result`-like iff it is a union whose every member, or a single non-union type,
+is a "result member":
 
-1. its `aliasSymbol` resolves to the name `Result`, **and**
-2. the symbol's declaration source file resolves to the kamchazky package.
+- has an `ok` property whose type is a boolean (literal `true`/`false` on the
+  union members, `boolean` otherwise), **and**
+- has a `value` or `error` property.
 
-Condition 2 prevents false positives from an unrelated `Result` type defined
-elsewhere. Type-based detection survives the staged method-removal refactor and
-any future renames; it never relies on identifier text.
+This is the exact shape of `OkResult<T> | ErrResult<E>`. Structural detection
+was chosen over matching the `Result` alias name + declaration path: the latter
+coupled detection (and tests) to identifier text and the package directory
+name. The structural check needs no imports, survives the method-removal
+refactor and any rename, and only matches a value that genuinely carries
+`ok` + `value`/`error` — so an unrelated `Result` type that is not this shape is
+ignored.
 
 ## Semantics — what counts as "used"
 
@@ -64,13 +70,17 @@ Everything else is already "used" or covered:
 ## Rule shape
 
 - `meta.type: "problem"`, `messages.mustUse`, `schema: []`, no `fixable`.
-- Single visitor: `ExpressionStatement`. Resolve the expression type (unwrap one
-  `await`), apply the two-condition detection, report on match.
+- Single visitor: `ExpressionStatement`. `getTypeAtLocation(node.expression)`
+  already yields the awaited type for an `await` expression, so no manual
+  unwrapping is needed; apply structural detection and report on match.
 
 ## Testing (TDD)
 
-`@typescript-eslint/rule-tester` `RuleTester` with a fixture `tsconfig` that
-imports the real `Result` type. Tests written first, red → green.
+`@typescript-eslint/rule-tester` `RuleTester` configured with
+`parserOptions.projectService.allowDefaultProject` so virtual test files get
+type info without living in a real tsconfig. Test cases define the
+`Result` shape inline (structural detection needs no import). Tests written
+first, red → green.
 
 - **Valid:** returned; assigned-and-read; `.ok` checked; passed to
   `Result.match` / `Result.unwrap`; a non-`Result` expression statement.
