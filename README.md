@@ -337,9 +337,15 @@ const r = getResult();    // assigned
 return getResult();       // returned
 getResult().ok;           // read
 doSomething(getResult()); // passed as argument
+void getResult();         // allowed — void expression type is undefined, not Result
 ```
 
 The rule uses TypeScript's type checker, so it works with any type that structurally matches a `Result` — not just `@semyonf/kamchazky` types.
+
+### Limitations
+
+- **`void` is an escape hatch.** `void getResult();` evaluates to `undefined`, so the rule sees no `Result` type and does not flag it. Use `// eslint-disable-next-line` for intentional discards instead.
+- **Nullable Results are not detected.** `Result<T, E> | null` is a union with a non-Result member, so the structural check skips it. Assign to a variable first if you need the rule to catch it.
 
 ---
 

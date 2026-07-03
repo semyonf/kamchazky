@@ -609,12 +609,6 @@ async function maybeAllAsync<const M extends readonly Promise<AnyMaybe>[]>(
   return some(values) as Some<Values>;
 }
 
-/** Combine multiple `Maybe's, returning `None` if any is `None`.
- * Same as `all` — `None` carries no error data to collect,
- * unlike `Result.collect` which gathers all errors.
- */
-const maybeCollect = maybeAll;
-
 // ---------------------------------------------------------------------------
 // Maybe <-> Result interop
 // ---------------------------------------------------------------------------
@@ -691,7 +685,6 @@ export const Maybe = {
   fromPredicate: maybeFromPredicate,
   all: maybeAll,
   allAsync: maybeAllAsync,
-  collect: maybeCollect,
   firstSome: maybeFirstSome,
   toResult: maybeToResult,
   fromResult: maybeFromResult,

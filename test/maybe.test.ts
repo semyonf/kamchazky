@@ -377,18 +377,6 @@ describe("Maybe.allAsync", () => {
   });
 });
 
-describe("Maybe.collect", () => {
-  test("is an alias for all", () => {
-    const m = M.collect(some(1), some(2));
-    expect(m.some && m.value).toEqual([1, 2]);
-  });
-
-  test("returns None like all", () => {
-    const m = M.collect(some(1), none() as Maybe<number>);
-    expect(m.some).toBe(false);
-  });
-});
-
 // ---------------------------------------------------------------------------
 // Maybe <-> Result interop
 // ---------------------------------------------------------------------------
