@@ -291,6 +291,58 @@ Maybe.toResult(some(42), () => new Error("missing"));     // ok(42)
 
 ---
 
+## ESLint Rule: `must-use-result`
+
+A `Result` carries an error that must not be silently lost. The `must-use-result` rule catches discarded Results at compile time — it flags any expression statement whose type looks like a `Result` (a union of `{ ok: boolean; value?; error? }` shapes).
+
+### Setup
+
+```bash
+npm install @semyonf/kamchazky @typescript-eslint/parser typescript
+```
+
+In your ESLint config:
+
+```js
+// eslint.config.js (flat config)
+import kamchazky from "@semyonf/kamchazky/eslint";
+
+export default [
+  {
+    plugins: { kamchazky },
+    rules: { "kamchazky/must-use-result": "error" },
+    languageOptions: { parser: require("@typescript-eslint/parser") },
+  },
+];
+```
+
+```jsonc
+// .eslintrc.json (legacy config)
+{
+  "plugins": ["@semyonf/kamchazky"],
+  "rules": { "@semyonf/kamchazky/must-use-result": "error" }
+}
+```
+
+### What it catches
+
+```typescript
+getResult();              // ❌ discarded — error is lost
+await getAsyncResult();   // ❌ discarded — error is lost
+const r = getResult();
+r;                        // ❌ assigned then discarded
+
+// ✅ Allowed
+const r = getResult();    // assigned
+return getResult();       // returned
+getResult().ok;           // read
+doSomething(getResult()); // passed as argument
+```
+
+The rule uses TypeScript's type checker, so it works with any type that structurally matches a `Result` — not just `@semyonf/kamchazky` types.
+
+---
+
 ## Design Decisions
 
 **Discriminant fields, not methods** — `result.ok` and `maybe.some` are boolean fields, not methods. TypeScript's control-flow analysis works directly with discriminant fields, giving you automatic narrowing without `.unwrap()`.
