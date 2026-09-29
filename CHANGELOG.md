@@ -1,5 +1,12 @@
 # @semyonf/kamchazky
 
+## 1.2.0
+
+### Minor Changes
+
+- f218968: Add `Result.split`, which turns a `Result` into a `[failure, value]` tuple.
+  Checking `failure` narrows `value` to `T`, and `failure` can be returned as is.
+
 ## 1.1.0
 
 ### Minor Changes
