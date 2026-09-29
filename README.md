@@ -135,6 +135,14 @@ Result.unwrapOr(result, fallback);  // returns value or fallback (same type)
 
 `unwrapOr` requires the fallback to be the same type `T` as the success value. Use `match` when you need a different return type.
 
+`split` turns a `Result` into a `[failure, value]` tuple, for early returns without `.value`:
+
+```typescript
+const [failure, user] = Result.split(await findUser(id));
+if (failure) return failure; // ErrResult<E>, returned as is
+user;                         // User
+```
+
 #### Pattern matching
 
 ```typescript

@@ -492,4 +492,17 @@ describe("extraction types", () => {
     }
     check(ok(1));
   });
+
+  test("split narrows value to T once failure is ruled out", () => {
+    function check(r: Result<number, TypeError>) {
+      const [failure, value] = Result.split(r);
+      expectTypeOf(value).toEqualTypeOf<number | undefined>();
+      if (failure) {
+        expectTypeOf(failure).toEqualTypeOf<ErrResult<TypeError>>();
+        return;
+      }
+      expectTypeOf(value).toEqualTypeOf<number>();
+    }
+    check(ok(1));
+  });
 });

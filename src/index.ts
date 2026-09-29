@@ -202,6 +202,18 @@ function unwrapOrElse<T, E extends Error>(
   return result.ok ? result.value : fn();
 }
 
+type Split<T, E extends Error> =
+  | readonly [failure: ErrResult<E>, value: undefined]
+  | readonly [failure: undefined, value: T];
+
+/**
+ * Split a `Result` into a `[failure, value]` tuple.  Checking `failure`
+ * narrows `value` to `T`, and `failure` can be returned as is.
+ */
+function split<T, E extends Error>(result: Result<T, E>): Split<T, E> {
+  return result.ok ? [undefined, result.value] : [result, undefined];
+}
+
 /** Convert a nullable value to a `Result`. */
 function fromNullable<T, E extends Error>(
   value: T | null | undefined,
@@ -715,6 +727,7 @@ export const Result = {
   unwrap,
   unwrapOr,
   unwrapOrElse,
+  split,
   fromNullable,
   fromPredicate,
   normalizeError,

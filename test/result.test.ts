@@ -300,6 +300,19 @@ describe("Result.unwrapOrElse", () => {
   });
 });
 
+describe("Result.split", () => {
+  test("returns [undefined, value] for Ok", () => {
+    expect(Result.split(ok(42))).toEqual([undefined, 42]);
+  });
+
+  test("returns [the same ErrResult, undefined] for Err", () => {
+    const r = err(new Error("fail"));
+    const [failure, value] = Result.split(r);
+    expect(failure).toBe(r);
+    expect(value).toBeUndefined();
+  });
+});
+
 describe("Result.transpose", () => {
   test("Ok(Some(v)) -> Some(Ok(v))", () => {
     const r = Result.transpose(ok(some(42)));
