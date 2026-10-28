@@ -1,5 +1,12 @@
 # @semyonf/kamchazky
 
+## 1.3.0
+
+### Minor Changes
+
+- 00db5f9: Add the `no-unwrap` ESLint rule. It flags `Result.unwrap` and `Maybe.unwrap`,
+  which throw on `Err` or `None` and take the failure out of the Result flow.
+
 ## 1.2.0
 
 ### Minor Changes
