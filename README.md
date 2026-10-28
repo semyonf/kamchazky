@@ -355,6 +355,51 @@ The rule uses TypeScript's type checker, so it works with any type that structur
 - **`void` is an escape hatch.** `void getResult();` evaluates to `undefined`, so the rule sees no `Result` type and does not flag it. Use `// eslint-disable-next-line` for intentional discards instead.
 - **Nullable Results are not detected.** `Result<T, E> | null` is a union with a non-Result member, so the structural check skips it. Assign to a variable first if you need the rule to catch it.
 
+## ESLint Rule: `no-unwrap`
+
+`Result.unwrap` throws the contained error on `Err`, and `Maybe.unwrap` throws on `None`. The thrown error leaves the Result flow, so neither the type nor `must-use-result` tracks it. The `no-unwrap` rule flags any reference to a function named `unwrap` whose first parameter looks like a `Result` or a `Maybe`, called or passed on.
+
+```js
+// eslint.config.js (flat config)
+rules: {
+  "kamchazky/must-use-result": "error",
+  "kamchazky/no-unwrap": "error",
+},
+```
+
+```jsonc
+// .eslintrc.json (legacy config)
+"rules": { "@semyonf/kamchazky/no-unwrap": "error" }
+```
+
+In tests a throw is what you want, since the test fails with the thrown error. Turn the rule off there:
+
+```js
+{
+  files: ["**/*.test.ts", "**/*.spec.ts"],
+  rules: { "kamchazky/no-unwrap": "off" },
+},
+```
+
+### What it catches
+
+```typescript
+Result.unwrap(r);         // ❌ throws on Err
+Maybe.unwrap(m);          // ❌ throws on None
+promise.then(Result.unwrap); // ❌ passed on, throws when called
+const { unwrap } = Result;
+unwrap(r);                // ❌ same function under its own name
+
+// ✅ Allowed
+const [failure, value] = Result.split(r);
+Result.unwrapOr(r, 0);
+Result.match(r, { ok: (v) => v, err: () => 0 });
+```
+
+### Limitations
+
+- **A renamed or detached function is not detected.** The rule matches by name: `const { unwrap: take } = Result; take(r);` is missed. After `const { unwrap } = Result;` only a direct call `unwrap(r)` is flagged, not `rs.map(unwrap)`.
+
 ---
 
 ## Design Decisions
