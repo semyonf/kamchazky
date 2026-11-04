@@ -19,8 +19,8 @@ jobs:
           node-version: ${{ matrix.node-version }}
           cache: npm
       - run: npm ci
-      - run: npx tsc
+      - run: npm run typecheck
       - run: npm run build
-      - run: npm run test:types
+      # `npm test` also runs the type tests: vitest.config.ts enables typecheck
       - run: npm test
-      - run: npx biome check src/ test/
+      - run: npm run check

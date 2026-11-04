@@ -360,12 +360,35 @@ describe("Maybe.allAsync", () => {
     }
   });
 
-  test("returns None for rejected promise", async () => {
-    const m = await M.allAsync(
-      Promise.resolve(some(1)),
-      Promise.reject(new Error("boom")) as Promise<Maybe<number>>
+  test("rejects with the rejection reason instead of hiding it as None", async () => {
+    const boom = new Error("boom");
+    await expect(
+      M.allAsync(
+        Promise.resolve(some(1)),
+        Promise.reject(boom) as Promise<Maybe<number>>
+      )
+    ).rejects.toBe(boom);
+  });
+
+  test("a rejection wins over a None that comes before it", async () => {
+    const boom = new Error("boom");
+    await expect(
+      M.allAsync(
+        Promise.resolve(none()),
+        Promise.reject(boom) as Promise<Maybe<number>>
+      )
+    ).rejects.toBe(boom);
+  });
+
+  test("rejects with the first rejection in argument order", async () => {
+    const first = new Error("first");
+    const second = new Error("second");
+    const late = new Promise<Maybe<number>>((_, reject) =>
+      setTimeout(() => reject(first), 5)
     );
-    expect(m.some).toBe(false);
+    await expect(
+      M.allAsync(late, Promise.reject(second) as Promise<Maybe<number>>)
+    ).rejects.toBe(first);
   });
 
   test("returns None when any resolved value is None", async () => {
@@ -441,5 +464,39 @@ describe("Result.fromMaybe", () => {
     const factory = vi.fn(() => new Error("missing"));
     Result.fromMaybe(some(42), factory);
     expect(factory).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Array arguments for combinators
+// ---------------------------------------------------------------------------
+
+describe("Maybe combinators accept an array", () => {
+  const many = Array.from({ length: 150_000 }, (_, i) => some(i));
+
+  test("Maybe.all", () => {
+    const m = M.all([some(1), some(2)]);
+    expect(m.some && m.value).toEqual([1, 2]);
+    expect(M.all([some(1), none()]).some).toBe(false);
+    const big = M.all(many);
+    expect(big.some && big.value.length).toBe(150_000);
+  });
+
+  test("Maybe.allAsync", async () => {
+    const m = await M.allAsync([
+      Promise.resolve(some(1)),
+      Promise.resolve(some(2)),
+    ]);
+    expect(m.some && m.value).toEqual([1, 2]);
+  });
+
+  test("Maybe.firstSome", () => {
+    const m = M.firstSome([none(), some(2)]);
+    expect(m.some && m.value).toBe(2);
+  });
+
+  test("a single Maybe argument is still the rest form", () => {
+    const m = M.all(some([1, 2]));
+    expect(m.some && m.value).toEqual([[1, 2]]);
   });
 });

@@ -304,3 +304,55 @@ describe("Result.fromMaybe types", () => {
     check(some(1));
   });
 });
+
+// ---------------------------------------------------------------------------
+// Precision
+// ---------------------------------------------------------------------------
+
+describe("Maybe precision", () => {
+  const m = none() as Maybe<number>;
+
+  test("firstSome with different types gives their union", () => {
+    expectTypeOf(M.firstSome(some(1), some("a"))).toEqualTypeOf<
+      Maybe<number | string>
+    >();
+    expectTypeOf(M.firstSome([some(1), some("a")])).toEqualTypeOf<
+      Maybe<number | string>
+    >();
+  });
+
+  test("firstSome of Nones holds never", () => {
+    expectTypeOf(M.firstSome(none(), none())).toEqualTypeOf<Maybe<never>>();
+  });
+
+  test("map on None stays None", () => {
+    expectTypeOf(M.map(none(), (x) => x)).toEqualTypeOf<None>();
+  });
+
+  test("flatMap returning only None holds never", () => {
+    expectTypeOf(M.flatMap(m, () => none())).toEqualTypeOf<Maybe<never>>();
+  });
+
+  test("match branches may differ", () => {
+    expectTypeOf(
+      M.match(m, { some: (v) => v, none: () => "none" })
+    ).toEqualTypeOf<number | string>();
+  });
+
+  test("unwrap of None is never", () => {
+    expectTypeOf(M.unwrap(none())).toEqualTypeOf<never>();
+  });
+
+  test("transpose of Some(Ok) adds no error", () => {
+    expectTypeOf(M.transpose(some(ok(1)))).toEqualTypeOf<
+      Result<Maybe<number>, never>
+    >();
+  });
+
+  test("allAsync accepts PromiseLike", async () => {
+    const pl = Promise.resolve(some(1)) as PromiseLike<Maybe<number>>;
+    expectTypeOf(await M.allAsync(pl)).toEqualTypeOf<
+      Maybe<readonly [number]>
+    >();
+  });
+});
