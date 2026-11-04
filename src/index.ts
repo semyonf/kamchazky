@@ -17,6 +17,15 @@ export type ErrResult<E extends Error = Error> = {
  */
 export type Result<T, E extends Error = Error> = OkResult<T> | ErrResult<E>;
 
+/**
+ * The error of `Result.collect` / `collectAsync`: a real `AggregateError`
+ * whose `.errors` is typed.  The built-in `AggregateError.errors` is
+ * `any[]`, which would let `r.error.errors[0].anything` compile.
+ */
+export interface AggregateErrorOf<E extends Error> extends AggregateError {
+  errors: E[];
+}
+
 type AnyResult = Result<unknown, Error>;
 
 type ValueOf<R> = R extends OkResult<infer T> ? T : never;
@@ -26,6 +35,15 @@ type TupleValues<R extends readonly AnyResult[]> = {
   [K in keyof R]: ValueOf<R[K]>;
 };
 type TupleErrors<R extends readonly AnyResult[]> = ErrorOf<R[number]>;
+
+/** Combinators take their items as rest arguments or as one array.  The
+ *  array form avoids spreading: `f(...arr)` with ~150k elements throws
+ *  `RangeError: Maximum call stack size exceeded`. */
+function listArgs<T>(args: readonly unknown[]): readonly T[] {
+  return (
+    args.length === 1 && Array.isArray(args[0]) ? args[0] : args
+  ) as readonly T[];
+}
 
 function createOk<T>(value: T): OkResult<T> {
   return Object.freeze({
@@ -40,12 +58,32 @@ function ok<T>(...args: [] | [value: T]): OkResult<undefined> | OkResult<T> {
   return args.length === 0 ? createOk(undefined) : createOk(args[0]);
 }
 
-/** Create a failed `Result` containing `error`. */
+/**
+ * Create a failed `Result` containing `error`.
+ *
+ * A non-`Error` value that slips past the type (through `any`, e.g. a
+ * `.catch((e) => err(e))`) is normalized with `normalizeError`, so
+ * `result.error.message` is always a string at runtime.
+ */
 function err<E extends Error>(error: E): ErrResult<E> {
   return Object.freeze({
     ok: false as const,
-    error,
+    error: isError(error) ? error : (normalizeError(error) as E),
   });
+}
+
+/**
+ * Check whether an arbitrary value is a `Result`: `{ ok: true, value }` or
+ * `{ ok: false, error }` with an `Error`.  For decorators, interceptors and
+ * other generic code that receives `unknown`.  Matches by shape, so a
+ * structurally equal object from another copy of the library passes too.
+ */
+function isResult(value: unknown): value is Result<unknown, Error> {
+  if (typeof value !== "object" || value === null) return false;
+  const r = value as { ok?: unknown; error?: unknown };
+  if (r.ok === true) return "value" in r;
+  if (r.ok === false) return isError(r.error);
+  return false;
 }
 
 /** Narrow a `Result` to `OkResult`. */
@@ -62,15 +100,19 @@ function isErr<T, E extends Error>(
 
 /** Transform the value inside an `Ok`, leaving `Err` unchanged. */
 function map<T, U>(result: OkResult<T>, fn: (value: T) => U): OkResult<U>;
-function map<T, U, E extends Error>(
+function map<E extends Error>(
+  result: ErrResult<E>,
+  fn: (value: never) => unknown
+): ErrResult<E>;
+function map<T, U, E extends Error = never>(
   result: Result<T, E>,
   fn: (value: T) => U
 ): Result<U, E>;
 function map<T, U, E extends Error>(
   result: Result<T, E>,
-  fn: (value: T) => U
+  fn: ((value: T) => U) | ((value: never) => unknown)
 ): Result<U, E> {
-  return result.ok ? ok(fn(result.value)) : result;
+  return result.ok ? ok((fn as (value: T) => U)(result.value)) : result;
 }
 
 /** Transform the error inside an `Err`, leaving `Ok` unchanged. */
@@ -78,20 +120,24 @@ function mapError<T>(
   result: OkResult<T>,
   fn: (error: never) => Error
 ): OkResult<T>;
+function mapError<E extends Error, F extends Error>(
+  result: ErrResult<E>,
+  fn: (error: E) => F
+): ErrResult<F>;
 function mapError<T, E extends Error, F extends Error>(
   result: Result<T, E>,
   fn: (error: E) => F
 ): Result<T, F>;
 function mapError<T, E extends Error, F extends Error>(
-  result: OkResult<T> | Result<T, E>,
+  result: Result<T, E>,
   fn: ((error: never) => Error) | ((error: E) => F)
-): OkResult<T> | Result<T, F> {
+): Result<T, F> {
   return result.ok ? result : err((fn as (error: E) => F)(result.error));
 }
 
 /** Run a side-effect on the `Ok` value without transforming the result. */
 function inspect<T>(result: OkResult<T>, fn: (value: T) => void): OkResult<T>;
-function inspect<T, E extends Error>(
+function inspect<T, E extends Error = never>(
   result: Result<T, E>,
   fn: (value: T) => void
 ): Result<T, E>;
@@ -121,10 +167,12 @@ function inspectError<T, E extends Error>(
 }
 
 /** Chain a `Result`-returning function on the `Ok` value. */
-function flatMap<T, U, E extends Error, F extends Error = never>(
-  result: Result<T, E>,
-  fn: (value: T) => Result<U, F>
-): Result<U, E | F> {
+function flatMap<
+  T,
+  U = never,
+  E extends Error = never,
+  F extends Error = never,
+>(result: Result<T, E>, fn: (value: T) => Result<U, F>): Result<U, E | F> {
   if (result.ok) return fn(result.value);
   return result;
 }
@@ -133,7 +181,7 @@ function flatMap<T, U, E extends Error, F extends Error = never>(
  * Recover from an error by applying `fn` to produce a new `Result`.
  * Alias: `flatMapErr`.
  */
-function orElse<T, E extends Error, F extends Error>(
+function orElse<T, E extends Error, F extends Error = never>(
   result: Result<T, E>,
   fn: (error: E) => Result<T, F>
 ): Result<T, F> {
@@ -145,7 +193,7 @@ function orElse<T, E extends Error, F extends Error>(
  * Recover from an error by applying `fn` to produce a new `Result`.
  * Alias for `orElse`.
  */
-function flatMapErr<T, E extends Error, F extends Error>(
+function flatMapErr<T, E extends Error, F extends Error = never>(
   result: Result<T, E>,
   fn: (error: E) => Result<T, F>
 ): Result<T, F> {
@@ -153,17 +201,18 @@ function flatMapErr<T, E extends Error, F extends Error>(
 }
 
 /** Flatten a nested `Result<Result<T, E>, F>` into `Result<T, E | F>`. */
-function flatten<T, E extends Error, F extends Error>(
+function flatten<T, E extends Error = never, F extends Error = never>(
   result: Result<Result<T, E>, F>
 ): Result<T, E | F> {
   return result.ok ? result.value : result;
 }
 
-/** Exhaustively handle both `Ok` and `Err` branches, returning `R`. */
-function match<T, E extends Error, R>(
+/** Exhaustively handle both `Ok` and `Err` branches.  The branches may
+ *  return different types; the result is their union. */
+function match<T = never, E extends Error = never, A = never, B = A>(
   result: Result<T, E>,
-  handlers: { ok: (value: T) => R; err: (error: E) => R }
-): R {
+  handlers: { ok: (value: T) => A; err: (error: E) => B }
+): A | B {
   return result.ok ? handlers.ok(result.value) : handlers.err(result.error);
 }
 
@@ -179,9 +228,18 @@ function exhaustive(value: never): never {
 }
 
 /** Return the `Ok` value or throw the contained error. */
-function unwrap<T, E extends Error>(result: Result<T, E>): T {
+function unwrap<T = never, E extends Error = never>(result: Result<T, E>): T {
   if (result.ok) return result.value;
   throw result.error;
+}
+
+/** Return the `Err` error or throw.  The inverse of `unwrap`, mostly for
+ *  tests: it reads `r.error` without narrowing first. */
+function unwrapErr<T = never, E extends Error = never>(
+  result: Result<T, E>
+): E {
+  if (!result.ok) return result.error;
+  throw new Error("Called unwrapErr on Ok", { cause: result.value });
 }
 
 /**
@@ -194,12 +252,12 @@ function unwrapOr<T, E extends Error>(result: Result<T, E>, fallback: T): T {
   return result.ok ? result.value : fallback;
 }
 
-/** Return the `Ok` value, or compute a fallback from `fn`. */
+/** Return the `Ok` value, or compute a fallback from the error. */
 function unwrapOrElse<T, E extends Error>(
   result: Result<T, E>,
-  fn: () => T
+  fn: (error: E) => T
 ): T {
-  return result.ok ? result.value : fn();
+  return result.ok ? result.value : fn(result.error);
 }
 
 type Split<T, E extends Error> =
@@ -210,7 +268,9 @@ type Split<T, E extends Error> =
  * Split a `Result` into a `[failure, value]` tuple.  Checking `failure`
  * narrows `value` to `T`, and `failure` can be returned as is.
  */
-function split<T, E extends Error>(result: Result<T, E>): Split<T, E> {
+function split<T = never, E extends Error = never>(
+  result: Result<T, E>
+): Split<T, E> {
   return result.ok ? [undefined, result.value] : [result, undefined];
 }
 
@@ -222,106 +282,168 @@ function fromNullable<T, E extends Error>(
   return value != null ? ok(value) : err(errorFactory());
 }
 
-/** Convert a predicate check to a `Result`.  Supports type-guard predicates. */
+/** Convert a predicate check to a `Result`.  Supports type-guard predicates.
+ *  The error factory receives the rejected value. */
 function fromPredicate<T, S extends T, E extends Error>(
   value: T,
   predicate: (value: T) => value is S,
-  errorFactory: () => E
+  errorFactory: (value: T) => E
 ): Result<S, E>;
 function fromPredicate<T, E extends Error>(
   value: T,
   predicate: (value: T) => boolean,
-  errorFactory: () => E
+  errorFactory: (value: T) => E
 ): Result<T, E>;
 function fromPredicate<T, E extends Error>(
   value: T,
   predicate: (value: T) => boolean,
-  errorFactory: () => E
+  errorFactory: (value: T) => E
 ): Result<T, E> {
-  return predicate(value) ? ok(value) : err(errorFactory());
+  return predicate(value) ? ok(value) : err(errorFactory(value));
 }
 
-/** Convert an unknown thrown value to an `Error` instance. */
+/** `instanceof Error`, plus Errors from another realm (vm, iframe). */
+function isError(value: unknown): value is Error {
+  return (
+    value instanceof Error ||
+    Object.prototype.toString.call(value) === "[object Error]"
+  );
+}
+
+/**
+ * Convert an unknown thrown value to an `Error` instance.
+ *
+ * Errors pass through unchanged. Primitives become `new Error(String(v))`.
+ * Objects are never serialized into the message — a rejected HTTP response
+ * or config object may carry tokens or headers. The message is the object's
+ * own string `message` if it has one, otherwise a fixed text; the original
+ * object stays available as `cause`.
+ */
 function normalizeError(error: unknown): Error {
-  if (error instanceof Error) return error;
-  if (error === null || error === undefined) return new Error(String(error));
-  if (typeof error === "object") {
+  if (isError(error)) return error;
+  if (
+    (typeof error === "object" && error !== null) ||
+    typeof error === "function"
+  ) {
+    let message: unknown;
     try {
-      const json = JSON.stringify(error);
-      if (json !== "{}") return new Error(json);
-      // JSON.stringify produced '{}' — likely RegExp or similar with no
-      // enumerable own properties. Fall through to String().
+      message = (error as { message?: unknown }).message;
     } catch {
-      // JSON.stringify throws on BigInt and circular references
+      // A throwing getter — fall back to the fixed message.
     }
+    return new Error(
+      typeof message === "string" ? message : "Non-Error object thrown",
+      { cause: error }
+    );
   }
-  try {
-    return new Error(String(error));
-  } catch {
-    return new Error("Non-stringifiable thrown value");
-  }
+  return new Error(String(error));
 }
 
-/** Wrap a synchronous function that may throw into a `Result`. */
-function tryCatch<T>(fn: () => T): Result<T, Error>;
+/** Map a caught value with `onError`, or normalize it.  Whatever `onError`
+ *  throws propagates unchanged, so a mapper can turn known errors into `Err`
+ *  and rethrow the rest. */
+function toError<E extends Error>(
+  error: unknown,
+  onError: ((error: unknown) => E) | undefined
+): E | Error {
+  return onError ? onError(error) : normalizeError(error);
+}
+
+function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
+  return (
+    ((typeof value === "object" && value !== null) ||
+      typeof value === "function") &&
+    typeof (value as { then?: unknown }).then === "function"
+  );
+}
+
+/** Turns `fn`'s type into a compile error when it may return a Promise,
+ *  including `number | Promise<number>`.  `any`, `unknown` and `never` stay
+ *  allowed (`JSON.parse`, throwing functions). */
+type SyncOnly<T> = 0 extends 1 & T
+  ? unknown
+  : [T] extends [never]
+    ? unknown
+    : true extends (T extends PromiseLike<unknown> ? true : false)
+      ? {
+          "Result.tryCatch does not await. Use Result.tryCatchAsync for functions that return a Promise": never;
+        }
+      : unknown;
+
+/**
+ * Wrap a synchronous function that may throw into a `Result`.
+ *
+ * Functions that return a Promise are a compile error — use
+ * `tryCatchAsync`.  If one slips through at runtime, the result is an
+ * `Err(TypeError)`, never an `Ok` holding a Promise.
+ *
+ * Whatever `onError` throws propagates unchanged: return an error to get an
+ * `Err`, rethrow to let the error through.
+ */
+function tryCatch<T>(fn: (() => T) & SyncOnly<T>): Result<T, Error>;
 function tryCatch<T, E extends Error>(
-  fn: () => T,
+  fn: (() => T) & SyncOnly<T>,
   onError: (error: unknown) => E
 ): Result<T, E>;
 function tryCatch<T, E extends Error>(
   fn: () => T,
   onError?: (error: unknown) => E
 ): Result<T, E | Error> {
+  let value: T;
   try {
-    return ok(fn());
+    value = fn();
   } catch (error) {
-    try {
-      return err(onError ? onError(error) : normalizeError(error));
-    } catch (mapperError) {
-      return err(new Error("Error mapper threw", { cause: mapperError }));
-    }
+    return err(toError(error, onError));
   }
+  if (isPromiseLike(value)) {
+    return err(
+      new TypeError(
+        "Result.tryCatch: fn returned a Promise, which tryCatch does not await. Use Result.tryCatchAsync."
+      )
+    );
+  }
+  return ok(value);
 }
 
-/** Wrap an asynchronous function that may reject into a `Result`. */
-function tryCatchAsync<T>(fn: () => Promise<T>): Promise<Result<T, Error>>;
+/**
+ * Wrap an asynchronous function that may reject into a `Result`.
+ *
+ * If `onError` throws, the returned promise rejects with that error.
+ */
+function tryCatchAsync<T>(fn: () => PromiseLike<T>): Promise<Result<T, Error>>;
 function tryCatchAsync<T, E extends Error>(
-  fn: () => Promise<T>,
+  fn: () => PromiseLike<T>,
   onError: (error: unknown) => E
 ): Promise<Result<T, E>>;
 async function tryCatchAsync<T, E extends Error>(
-  fn: () => Promise<T>,
+  fn: () => PromiseLike<T>,
   onError?: (error: unknown) => E
 ): Promise<Result<T, E | Error>> {
   try {
     return ok(await fn());
   } catch (error) {
-    try {
-      return err(onError ? onError(error) : normalizeError(error));
-    } catch (mapperError) {
-      return err(new Error("Error mapper threw", { cause: mapperError }));
-    }
+    return err(toError(error, onError));
   }
 }
 
-/** Wrap a `Promise` that may reject into a `Result`. */
-function fromPromise<T>(promise: Promise<T>): Promise<Result<T, Error>>;
+/**
+ * Wrap a `Promise` that may reject into a `Result`.
+ *
+ * If `onError` throws, the returned promise rejects with that error.
+ */
+function fromPromise<T>(promise: PromiseLike<T>): Promise<Result<T, Error>>;
 function fromPromise<T, E extends Error>(
-  promise: Promise<T>,
+  promise: PromiseLike<T>,
   onError: (error: unknown) => E
 ): Promise<Result<T, E>>;
 async function fromPromise<T, E extends Error>(
-  promise: Promise<T>,
+  promise: PromiseLike<T>,
   onError?: (error: unknown) => E
 ): Promise<Result<T, E | Error>> {
   try {
     return ok(await promise);
   } catch (error) {
-    try {
-      return err(onError ? onError(error) : normalizeError(error));
-    } catch (mapperError) {
-      return err(new Error("Error mapper threw", { cause: mapperError }));
-    }
+    return err(toError(error, onError));
   }
 }
 
@@ -329,18 +451,23 @@ async function fromPromise<T, E extends Error>(
  * Combine multiple `Result`s into a single `Result` containing a tuple of
  * values.  Returns the first `Err` encountered (fail-fast).
  *
- * Pass results as individual arguments — spreading an array loses tuple
- * inference and degrades value types to `unknown[]`.
+ * Pass results as arguments, or as one array — `all(results)` for a
+ * dynamic list.  Do not spread a large array into arguments: around 150k
+ * elements that throws `RangeError`.
  */
 function all<const R extends readonly AnyResult[]>(
+  results: R
+): Result<TupleValues<R>, TupleErrors<R>>;
+function all<const R extends readonly AnyResult[]>(
   ...results: R
-): Result<TupleValues<R>, TupleErrors<R>> {
+): Result<TupleValues<R>, TupleErrors<R>>;
+function all(...args: readonly unknown[]): AnyResult {
   const values: unknown[] = [];
-  for (const result of results) {
-    if (!result.ok) return err(result.error) as ErrResult<TupleErrors<R>>;
+  for (const result of listArgs<AnyResult>(args)) {
+    if (!result.ok) return err(result.error);
     values.push(result.value);
   }
-  return ok(values) as OkResult<TupleValues<R>>;
+  return ok(values);
 }
 
 /**
@@ -349,47 +476,62 @@ function all<const R extends readonly AnyResult[]>(
  *
  * Promises are expected to resolve to `Result`s — not reject.  If a promise
  * does reject, the rejection is caught and wrapped as an `Err`.
- *
- * @breaking v0.2 — Uses `Promise.allSettled` instead of `Promise.all`. All
- * promises are now always awaited to completion; the first error found during
- * iteration is returned.
  */
-async function allAsync<const R extends readonly Promise<AnyResult>[]>(
+function allAsync<const R extends readonly PromiseLike<AnyResult>[]>(
+  promises: R
+): Promise<
+  Result<
+    { [K in keyof R]: ValueOf<Awaited<R[K]>> },
+    ErrorOf<Awaited<R[number]>> | Error
+  >
+>;
+function allAsync<const R extends readonly PromiseLike<AnyResult>[]>(
   ...promises: R
 ): Promise<
   Result<
     { [K in keyof R]: ValueOf<Awaited<R[K]>> },
     ErrorOf<Awaited<R[number]>> | Error
   >
-> {
-  type Values = { [K in keyof R]: ValueOf<Awaited<R[K]>> };
-  type Errors = ErrorOf<Awaited<R[number]>> | Error;
-
-  const settled = await Promise.allSettled(promises);
+>;
+async function allAsync(...args: readonly unknown[]): Promise<AnyResult> {
+  const settled = await Promise.allSettled(
+    listArgs<PromiseLike<AnyResult>>(args)
+  );
   const values: unknown[] = [];
   for (const s of settled) {
-    if (s.status === "rejected") {
-      return err(normalizeError(s.reason)) as ErrResult<Errors>;
-    }
-    if (!s.value.ok) {
-      return err(s.value.error) as ErrResult<Errors>;
-    }
+    if (s.status === "rejected") return err(normalizeError(s.reason));
+    if (!s.value.ok) return err(s.value.error);
     values.push(s.value.value);
   }
-  return ok(values) as OkResult<Values>;
+  return ok(values);
 }
 
 /**
  * Like `collect`, but for promises of `Result`s.  Resolves all promises
  * via `Promise.allSettled`, then collects all errors.  Returns an
- * `AggregateError` containing every error found.
+ * `AggregateError` containing every error found; a rejection is normalized
+ * to `Error`, so `.errors` is typed `(E | Error)[]`.
  */
-async function collectAsync<const R extends readonly Promise<AnyResult>[]>(
+function collectAsync<const R extends readonly PromiseLike<AnyResult>[]>(
+  promises: R
+): Promise<
+  Result<
+    { [K in keyof R]: ValueOf<Awaited<R[K]>> },
+    AggregateErrorOf<ErrorOf<Awaited<R[number]>> | Error>
+  >
+>;
+function collectAsync<const R extends readonly PromiseLike<AnyResult>[]>(
   ...promises: R
-): Promise<Result<{ [K in keyof R]: ValueOf<Awaited<R[K]>> }, AggregateError>> {
-  type Values = { [K in keyof R]: ValueOf<Awaited<R[K]>> };
-
-  const settled = await Promise.allSettled(promises);
+): Promise<
+  Result<
+    { [K in keyof R]: ValueOf<Awaited<R[K]>> },
+    AggregateErrorOf<ErrorOf<Awaited<R[number]>> | Error>
+  >
+>;
+async function collectAsync(...args: readonly unknown[]): Promise<AnyResult> {
+  const settled = await Promise.allSettled(
+    listArgs<PromiseLike<AnyResult>>(args)
+  );
   const values: unknown[] = [];
   const errors: Error[] = [];
   for (const s of settled) {
@@ -401,9 +543,8 @@ async function collectAsync<const R extends readonly Promise<AnyResult>[]>(
       values.push(s.value.value);
     }
   }
-  if (errors.length > 0)
-    return err(new AggregateError(errors)) as ErrResult<AggregateError>;
-  return ok(values) as OkResult<Values>;
+  if (errors.length > 0) return err(new AggregateError(errors));
+  return ok(values);
 }
 
 /**
@@ -412,17 +553,20 @@ async function collectAsync<const R extends readonly Promise<AnyResult>[]>(
  * `.errors` array contains every individual error.
  */
 function collect<const R extends readonly AnyResult[]>(
+  results: R
+): Result<TupleValues<R>, AggregateErrorOf<TupleErrors<R>>>;
+function collect<const R extends readonly AnyResult[]>(
   ...results: R
-): Result<TupleValues<R>, AggregateError> {
+): Result<TupleValues<R>, AggregateErrorOf<TupleErrors<R>>>;
+function collect(...args: readonly unknown[]): AnyResult {
   const values: unknown[] = [];
   const errors: Error[] = [];
-  for (const result of results) {
+  for (const result of listArgs<AnyResult>(args)) {
     if (result.ok) values.push(result.value);
     else errors.push(result.error);
   }
-  if (errors.length > 0)
-    return err(new AggregateError(errors)) as ErrResult<AggregateError>;
-  return ok(values) as OkResult<TupleValues<R>>;
+  if (errors.length > 0) return err(new AggregateError(errors));
+  return ok(values);
 }
 
 // ===========================================================================
@@ -484,13 +628,17 @@ function isNone<T>(maybe: Maybe<T>): maybe is None {
 
 /** Transform the value inside a `Some`, leaving `None` unchanged. */
 function maybeMap<T, U>(maybe: Some<T>, fn: (value: T) => U): Some<U>;
+function maybeMap(maybe: None, fn: (value: never) => unknown): None;
 function maybeMap<T, U>(maybe: Maybe<T>, fn: (value: T) => U): Maybe<U>;
-function maybeMap<T, U>(maybe: Maybe<T>, fn: (value: T) => U): Maybe<U> {
-  return maybe.some ? some(fn(maybe.value)) : NONE;
+function maybeMap<T, U>(
+  maybe: Maybe<T>,
+  fn: ((value: T) => U) | ((value: never) => unknown)
+): Maybe<U> {
+  return maybe.some ? some((fn as (value: T) => U)(maybe.value)) : NONE;
 }
 
 /** Chain a `Maybe`-returning function on the `Some` value. */
-function maybeFlatMap<T, U>(
+function maybeFlatMap<T, U = never>(
   maybe: Maybe<T>,
   fn: (value: T) => Maybe<U>
 ): Maybe<U> {
@@ -526,16 +674,17 @@ function maybeInspect<T>(maybe: Maybe<T>, fn: (value: T) => void): Maybe<T> {
   return maybe;
 }
 
-/** Exhaustively handle both `Some` and `None` branches, returning `R`. */
-function maybeMatch<T, R>(
+/** Exhaustively handle both `Some` and `None` branches.  The branches may
+ *  return different types; the result is their union. */
+function maybeMatch<T = never, A = never, B = A>(
   maybe: Maybe<T>,
-  handlers: { some: (value: T) => R; none: () => R }
-): R {
+  handlers: { some: (value: T) => A; none: () => B }
+): A | B {
   return maybe.some ? handlers.some(maybe.value) : handlers.none();
 }
 
 /** Return the `Some` value or throw. */
-function maybeUnwrap<T>(maybe: Maybe<T>): T {
+function maybeUnwrap<T = never>(maybe: Maybe<T>): T {
   if (maybe.some) return maybe.value;
   throw new Error("Called unwrap on None");
 }
@@ -582,55 +731,76 @@ function maybeFromPredicate<T>(
  * Combine multiple `Maybe`s into a single `Maybe` containing a tuple of
  * values.  Returns `None` if any input is `None` (fail-fast).
  *
- * Pass maybes as individual arguments — spreading an array loses tuple
- * inference and degrades value types to `unknown[]`.
+ * Pass maybes as arguments, or as one array — `Maybe.all(maybes)` for a
+ * dynamic list.  Do not spread a large array into arguments: around 150k
+ * elements that throws `RangeError`.
  */
 function maybeAll<const M extends readonly AnyMaybe[]>(
+  maybes: M
+): Maybe<TupleMaybeValues<M>>;
+function maybeAll<const M extends readonly AnyMaybe[]>(
   ...maybes: M
-): Maybe<TupleMaybeValues<M>> {
+): Maybe<TupleMaybeValues<M>>;
+function maybeAll(...args: readonly unknown[]): AnyMaybe {
   const values: unknown[] = [];
-  for (const m of maybes) {
+  for (const m of listArgs<AnyMaybe>(args)) {
     if (!m.some) return NONE;
     values.push(m.value);
   }
-  return some(values) as Some<TupleMaybeValues<M>>;
+  return some(values);
 }
 
-/** Return the first `Some` found, or `None` if all are `None`. */
-function maybeFirstSome<T>(...maybes: Maybe<T>[]): Maybe<T> {
-  for (const m of maybes) {
+/** Return the first `Some` found, or `None` if all are `None`.  Takes
+ *  maybes as arguments or as one array.  Inputs may hold different types;
+ *  the value type is their union. */
+function maybeFirstSome<const M extends readonly AnyMaybe[]>(
+  maybes: M
+): Maybe<MaybeValueOf<M[number]>>;
+function maybeFirstSome<const M extends readonly AnyMaybe[]>(
+  ...maybes: M
+): Maybe<MaybeValueOf<M[number]>>;
+function maybeFirstSome(...args: readonly unknown[]): AnyMaybe {
+  for (const m of listArgs<AnyMaybe>(args)) {
     if (m.some) return m;
   }
   return NONE;
 }
 
-/** Like `all`, but for promises of `Maybe`s.  Resolves all promises
- *  concurrently via `Promise.allSettled`. */
-async function maybeAllAsync<const M extends readonly Promise<AnyMaybe>[]>(
+/** Like `all`, but for promises of `Maybe`s.  Waits for all promises to
+ *  settle via `Promise.allSettled`.
+ *
+ *  `None` means "no value", not "failed": if any promise rejects, the
+ *  returned promise rejects with the first rejection reason in argument
+ *  order, even when another input is `None`.  Use `Result.allAsync` or
+ *  `Result.collectAsync` to get errors as values. */
+function maybeAllAsync<const M extends readonly PromiseLike<AnyMaybe>[]>(
+  promises: M
+): Promise<Maybe<{ [K in keyof M]: MaybeValueOf<Awaited<M[K]>> }>>;
+function maybeAllAsync<const M extends readonly PromiseLike<AnyMaybe>[]>(
   ...promises: M
-): Promise<Maybe<{ [K in keyof M]: MaybeValueOf<Awaited<M[K]>> }>> {
-  type Values = { [K in keyof M]: MaybeValueOf<Awaited<M[K]>> };
+): Promise<Maybe<{ [K in keyof M]: MaybeValueOf<Awaited<M[K]>> }>>;
+async function maybeAllAsync(...args: readonly unknown[]): Promise<AnyMaybe> {
+  const settled = await Promise.allSettled(
+    listArgs<PromiseLike<AnyMaybe>>(args)
+  );
+  const rejected = settled.find(
+    (s): s is PromiseRejectedResult => s.status === "rejected"
+  );
+  if (rejected) throw rejected.reason;
 
-  const settled = await Promise.allSettled(promises);
   const values: unknown[] = [];
   for (const s of settled) {
-    if (s.status === "rejected") return NONE;
-    if (!s.value.some) return NONE;
+    if (s.status === "rejected" || !s.value.some) return NONE;
     values.push(s.value.value);
   }
-  return some(values) as Some<Values>;
+  return some(values);
 }
 
 // ---------------------------------------------------------------------------
 // Maybe <-> Result interop
 // ---------------------------------------------------------------------------
 
-/** Convert a `Maybe` to a `Result`, calling `errorFactory` only when `None`.
- *
- * @breaking v0.2 — The second argument changed from `error: E` to
- * `errorFactory: () => E`. The factory is only called when the Maybe is
- * None, avoiding unnecessary error construction for Some.
- */
+/** Convert a `Maybe` to a `Result`, calling `errorFactory` only when `None`. */
 function maybeToResult<T, E extends Error>(
   maybe: Maybe<T>,
   errorFactory: () => E
@@ -649,11 +819,7 @@ function resultToMaybe<T, E extends Error>(result: Result<T, E>): Maybe<T> {
 }
 
 /** Convert a `Maybe` to a `Result`, calling `errorFactory` only when `None`.
- * Alias for `maybeToResult`.
- *
- * @breaking v0.2 — The second argument changed from `error: E` to
- * `errorFactory: () => E`.
- */
+ * Alias for `maybeToResult`. */
 function resultFromMaybe<T, E extends Error>(
   maybe: Maybe<T>,
   errorFactory: () => E
@@ -662,7 +828,7 @@ function resultFromMaybe<T, E extends Error>(
 }
 
 /** Convert a `Result<Maybe<T>, E>` to `Maybe<Result<T, E>>`. */
-function resultTranspose<T, E extends Error>(
+function resultTranspose<T, E extends Error = never>(
   result: Result<Maybe<T>, E>
 ): Maybe<Result<T, E>> {
   if (!result.ok) return some(result);
@@ -671,7 +837,7 @@ function resultTranspose<T, E extends Error>(
 }
 
 /** Convert a `Maybe<Result<T, E>>` to `Result<Maybe<T>, E>`. */
-function maybeTranspose<T, E extends Error>(
+function maybeTranspose<T, E extends Error = never>(
   maybe: Maybe<Result<T, E>>
 ): Result<Maybe<T>, E> {
   if (!maybe.some) return ok(NONE);
@@ -701,17 +867,12 @@ export const Maybe = {
   toResult: maybeToResult,
   fromResult: maybeFromResult,
   transpose: maybeTranspose,
-  // `as const` without `satisfies Record<string, Function>`: the namespace is a
-  // small, static, hand-maintained list of named function references — the
-  // function-only invariant is obvious from inspection and enforced by code
-  // review. Adding `satisfies` would guard a near-zero-probability mistake that
-  // TypeScript would catch at every call site anyway, for no consumer benefit.
 } as const;
 
-// Add interop to Result namespace
 export const Result = {
   ok,
   err,
+  isResult,
   isOk,
   isErr,
   map,
@@ -725,6 +886,7 @@ export const Result = {
   match,
   exhaustive,
   unwrap,
+  unwrapErr,
   unwrapOr,
   unwrapOrElse,
   split,
@@ -741,7 +903,17 @@ export const Result = {
   toMaybe: resultToMaybe,
   fromMaybe: resultFromMaybe,
   transpose: resultTranspose,
-  // See comment on Maybe above.
 } as const;
 
-export { err, isErr, isNone, isOk, isSome, none, normalizeError, ok, some };
+export {
+  err,
+  isErr,
+  isNone,
+  isOk,
+  isResult,
+  isSome,
+  none,
+  normalizeError,
+  ok,
+  some,
+};

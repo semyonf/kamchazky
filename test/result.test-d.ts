@@ -1,13 +1,16 @@
 import { describe, expectTypeOf, test } from "vitest";
 import {
+  type AggregateErrorOf,
   type ErrResult,
   err,
   isErr,
   isOk,
+  type Maybe,
   normalizeError,
   type OkResult,
   ok,
   Result,
+  some,
 } from "../src/index.js";
 
 // ---------------------------------------------------------------------------
@@ -311,10 +314,12 @@ describe("Result.collect types", () => {
     }
   });
 
-  test("error type is AggregateError", () => {
+  test("error type is AggregateError with typed .errors", () => {
     const r = Result.collect(ok(1), err(new TypeError()));
     if (!r.ok) {
-      expectTypeOf(r.error).toEqualTypeOf<AggregateError>();
+      expectTypeOf(r.error).toEqualTypeOf<AggregateErrorOf<TypeError>>();
+      expectTypeOf(r.error.errors).toEqualTypeOf<TypeError[]>();
+      expectTypeOf(r.error).toMatchTypeOf<AggregateError>();
     }
   });
 });
@@ -401,6 +406,44 @@ describe("Result.tryCatch types", () => {
     } else {
       expectTypeOf(r.error).toEqualTypeOf<TypeError>();
     }
+  });
+});
+
+describe("Result.tryCatch rejects async functions", () => {
+  test("async function is a compile error", () => {
+    // @ts-expect-error — use tryCatchAsync for functions returning a Promise
+    Result.tryCatch(async () => 42);
+  });
+
+  test("Promise-returning function is a compile error", () => {
+    // @ts-expect-error — use tryCatchAsync for functions returning a Promise
+    Result.tryCatch(() => Promise.resolve(42));
+  });
+
+  test("Promise-returning function with mapper is a compile error", () => {
+    Result.tryCatch(
+      // @ts-expect-error — use tryCatchAsync for functions returning a Promise
+      () => Promise.resolve(42),
+      () => new TypeError()
+    );
+  });
+
+  test("throwing function infers never", () => {
+    const r = Result.tryCatch(() => {
+      throw new Error();
+    });
+    expectTypeOf(r).toEqualTypeOf<Result<never, Error>>();
+  });
+
+  test("function returning any stays allowed", () => {
+    const r = Result.tryCatch(() => JSON.parse("1"));
+    // biome-ignore lint/suspicious/noExplicitAny: JSON.parse returns any
+    expectTypeOf(r).toEqualTypeOf<Result<any, Error>>();
+  });
+
+  test("function returning unknown stays allowed", () => {
+    const r = Result.tryCatch((): unknown => 1);
+    expectTypeOf(r).toEqualTypeOf<Result<unknown, Error>>();
   });
 });
 
@@ -504,5 +547,181 @@ describe("extraction types", () => {
       expectTypeOf(value).toEqualTypeOf<number>();
     }
     check(ok(1));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// unwrapErr / isResult / array arguments
+// ---------------------------------------------------------------------------
+
+describe("Result.unwrapErr types", () => {
+  test("returns the error type", () => {
+    const r = err(new TypeError()) as Result<number, TypeError>;
+    expectTypeOf(Result.unwrapErr(r)).toEqualTypeOf<TypeError>();
+  });
+});
+
+describe("Result.isResult types", () => {
+  test("narrows unknown to Result<unknown, Error>", () => {
+    const x: unknown = ok(1);
+    if (Result.isResult(x)) {
+      expectTypeOf(x).toEqualTypeOf<Result<unknown, Error>>();
+    }
+  });
+});
+
+describe("array arguments types", () => {
+  test("Result.all on an array → array of values", () => {
+    const rs: Result<number, TypeError>[] = [];
+    expectTypeOf(Result.all(rs)).toEqualTypeOf<Result<number[], TypeError>>();
+  });
+
+  test("Result.all on an array literal keeps the tuple", () => {
+    const r = Result.all([ok(1), ok("a")]);
+    if (r.ok) expectTypeOf(r.value).toEqualTypeOf<readonly [number, string]>();
+  });
+
+  test("Result.collect on an array", () => {
+    const rs: Result<number, TypeError>[] = [];
+    expectTypeOf(Result.collect(rs)).toEqualTypeOf<
+      Result<number[], AggregateErrorOf<TypeError>>
+    >();
+  });
+
+  test("Result.allAsync on an array", async () => {
+    const ps: Promise<Result<number, TypeError>>[] = [];
+    expectTypeOf(await Result.allAsync(ps)).toEqualTypeOf<
+      Result<number[], TypeError | Error>
+    >();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Precision: no `unknown` / `Error` where nothing can be inferred
+// ---------------------------------------------------------------------------
+
+class NotFound extends Error {
+  override readonly name = "NotFound" as const;
+}
+
+describe("uninferable error and value types are never", () => {
+  const r = err(new TypeError()) as Result<number, TypeError>;
+
+  test("orElse recovering with Ok cannot fail", () => {
+    expectTypeOf(Result.orElse(r, () => ok(0))).toEqualTypeOf<
+      Result<number, never>
+    >();
+    expectTypeOf(Result.flatMapErr(r, () => ok(0))).toEqualTypeOf<
+      Result<number, never>
+    >();
+  });
+
+  test("flatMap returning only Err has value never", () => {
+    expectTypeOf(Result.flatMap(r, () => err(new NotFound()))).toEqualTypeOf<
+      Result<never, TypeError | NotFound>
+    >();
+  });
+
+  test("flatten of an Ok adds no error", () => {
+    expectTypeOf(Result.flatten(ok(r))).toEqualTypeOf<
+      Result<number, TypeError>
+    >();
+  });
+
+  test("split / unwrapErr / transpose of an Ok", () => {
+    expectTypeOf(Result.split(ok(1))[0]).toEqualTypeOf<
+      ErrResult<never> | undefined
+    >();
+    expectTypeOf(Result.unwrapErr(ok(1))).toEqualTypeOf<never>();
+    expectTypeOf(Result.unwrap(err(new TypeError()))).toEqualTypeOf<never>();
+    expectTypeOf(Result.transpose(ok(some(1)))).toEqualTypeOf<
+      Maybe<Result<number, never>>
+    >();
+  });
+
+  test("map / mapError keep the known side", () => {
+    expectTypeOf(Result.map(err(new TypeError()), (x) => x)).toEqualTypeOf<
+      ErrResult<TypeError>
+    >();
+    expectTypeOf(
+      Result.mapError(err(new TypeError()), () => new NotFound())
+    ).toEqualTypeOf<ErrResult<NotFound>>();
+  });
+});
+
+describe("Result.match branches", () => {
+  const r = err(new TypeError()) as Result<number, TypeError>;
+
+  test("different branch types give their union", () => {
+    expectTypeOf(
+      Result.match(r, { ok: (v) => v, err: (e) => e.message })
+    ).toEqualTypeOf<number | string>();
+  });
+
+  test("match on an Err gives the err branch type", () => {
+    expectTypeOf(
+      Result.match(err(new TypeError()), { ok: (v) => v, err: (e) => e })
+    ).toEqualTypeOf<TypeError>();
+  });
+
+  test("three explicit type arguments still work", () => {
+    expectTypeOf(
+      Result.match<number, TypeError, string>(r, {
+        ok: String,
+        err: (e) => e.message,
+      })
+    ).toEqualTypeOf<string>();
+  });
+});
+
+describe("collect error types", () => {
+  test("collectAsync .errors includes Error from rejections", async () => {
+    const r = await Result.collectAsync(
+      Promise.resolve(err(new NotFound())) as Promise<Result<number, NotFound>>
+    );
+    if (!r.ok) {
+      expectTypeOf(r.error.errors).toEqualTypeOf<(NotFound | Error)[]>();
+    }
+  });
+
+  test("AggregateErrorOf is assignable to AggregateError", () => {
+    expectTypeOf<AggregateErrorOf<TypeError>>().toMatchTypeOf<AggregateError>();
+  });
+});
+
+describe("tryCatch rejects a Promise in a union", () => {
+  test("number | Promise<number> is a compile error", () => {
+    const f = (): number | Promise<number> => 1;
+    // @ts-expect-error — may return a Promise
+    Result.tryCatch(f);
+  });
+});
+
+describe("PromiseLike inputs", () => {
+  const pl = Promise.resolve(ok(1)) as PromiseLike<Result<number, TypeError>>;
+
+  test("fromPromise / tryCatchAsync / allAsync / collectAsync", async () => {
+    expectTypeOf(
+      await Result.fromPromise(Promise.resolve(1) as PromiseLike<number>)
+    ).toEqualTypeOf<Result<number, Error>>();
+    expectTypeOf(
+      await Result.tryCatchAsync(
+        () => Promise.resolve(1) as PromiseLike<number>
+      )
+    ).toEqualTypeOf<Result<number, Error>>();
+    expectTypeOf(await Result.allAsync(pl)).toEqualTypeOf<
+      Result<readonly [number], TypeError | Error>
+    >();
+    expectTypeOf(await Result.collectAsync(pl)).toEqualTypeOf<
+      Result<readonly [number], AggregateErrorOf<TypeError | Error>>
+    >();
+  });
+});
+
+describe("error classes need a distinguishing member", () => {
+  test("a literal name keeps a plain Error out", () => {
+    // @ts-expect-error — Error has no `name: "NotFound"`
+    const r: Result<number, NotFound> = err(new Error("x"));
+    expectTypeOf(r).toEqualTypeOf<Result<number, NotFound>>();
   });
 });

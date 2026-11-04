@@ -17,12 +17,11 @@ function hasBooleanProperty(
   const property = type.getProperty(name);
   if (!property) return false;
 
+  // Require a literal `true` / `false` discriminant. A plain `boolean`
+  // (e.g. an API DTO like `{ ok: boolean; error?: string }`) gives no
+  // narrowing and is not a Result or Maybe in this library's sense.
   const propertyType = checker.getTypeOfSymbol(property);
-  return (
-    (propertyType.flags &
-      (ts.TypeFlags.BooleanLiteral | ts.TypeFlags.Boolean)) !==
-    0
-  );
+  return (propertyType.flags & ts.TypeFlags.BooleanLiteral) !== 0;
 }
 
 function isResultMember(type: ts.Type, checker: ts.TypeChecker): boolean {
@@ -35,12 +34,16 @@ function isMaybeMember(type: ts.Type, checker: ts.TypeChecker): boolean {
   return hasBooleanProperty(type, "some", checker);
 }
 
+const NULLISH = ts.TypeFlags.Null | ts.TypeFlags.Undefined;
+
 function everyMember(
   type: ts.Type,
   isMember: (member: ts.Type) => boolean
 ): boolean {
   if (type.isUnion()) {
-    return type.types.length > 0 && type.types.every(isMember);
+    // Ignore null/undefined members so `Result<T, E> | null` is still caught.
+    const members = type.types.filter((m) => (m.flags & NULLISH) === 0);
+    return members.length > 0 && members.every(isMember);
   }
 
   return isMember(type);
@@ -81,7 +84,63 @@ function memberName(node: TSESTree.MemberExpression): string | undefined {
   return undefined;
 }
 
-export const mustUseResult = createRule({
+/** A Result, or an array / tuple of Results (e.g. `items.map(validate)` or
+ *  `await Promise.all(items.map(save))`). */
+function carriesResult(type: ts.Type, checker: ts.TypeChecker): boolean {
+  if (isResultLike(type, checker)) return true;
+  if (checker.isArrayType(type)) {
+    const [element] = checker.getTypeArguments(type as ts.TypeReference);
+    return element !== undefined && isResultLike(element, checker);
+  }
+  if (checker.isTupleType(type)) {
+    const elements = checker.getTypeArguments(type as ts.TypeReference);
+    return (
+      elements.length > 0 && elements.every((e) => isResultLike(e, checker))
+    );
+  }
+  return false;
+}
+
+/** `Promise<X>` where X carries a Result. */
+function promisesResult(type: ts.Type, checker: ts.TypeChecker): boolean {
+  const awaited = checker.getAwaitedType(type);
+  return (
+    awaited !== undefined && awaited !== type && carriesResult(awaited, checker)
+  );
+}
+
+/** The parameter ignores what the callback returns: every call signature of
+ *  its type returns `void` (e.g. `Array.prototype.forEach`). */
+function ignoresReturn(type: ts.Type, checker: ts.TypeChecker): boolean {
+  const signatures = checker.getNonNullableType(type).getCallSignatures();
+  return (
+    signatures.length > 0 &&
+    signatures.every((s) => (s.getReturnType().flags & ts.TypeFlags.Void) !== 0)
+  );
+}
+
+function returnsResult(type: ts.Type, checker: ts.TypeChecker): boolean {
+  const signatures = type.getCallSignatures();
+  return (
+    signatures.length > 0 &&
+    signatures.some((s) => {
+      const ret = s.getReturnType();
+      return carriesResult(ret, checker) || promisesResult(ret, checker);
+    })
+  );
+}
+
+/** A sequence expression discards every sub-expression, including the last
+ *  one (the whole statement is itself discarded), so check them all. */
+function flattenSequence(
+  expression: TSESTree.Expression
+): TSESTree.Expression[] {
+  return expression.type === AST_NODE_TYPES.SequenceExpression
+    ? expression.expressions.flatMap(flattenSequence)
+    : [expression];
+}
+
+const mustUseResult = createRule({
   name: "must-use-result",
   meta: {
     type: "problem",
@@ -92,6 +151,10 @@ export const mustUseResult = createRule({
     messages: {
       mustUse:
         "This Result is discarded. Read its `.ok`, pass it on, or return it — otherwise the error it carries is lost silently.",
+      mustUseAsync:
+        "This Promise resolves to a Result that is discarded. Await it and read its `.ok` — otherwise the error it carries is lost silently.",
+      mustUseCallback:
+        "This callback returns a Result, but the caller ignores the callback's return value — every error it returns is lost silently. Use a loop, or `map` and handle the Results.",
     },
     schema: [],
   },
@@ -100,18 +163,42 @@ export const mustUseResult = createRule({
     const services = ESLintUtils.getParserServices(context);
     const checker = services.program.getTypeChecker();
 
+    function checkArguments(
+      node: TSESTree.CallExpression | TSESTree.NewExpression
+    ) {
+      for (const arg of node.arguments) {
+        if (arg.type === AST_NODE_TYPES.SpreadElement) continue;
+        const tsNode = services.esTreeNodeToTSNodeMap.get(arg);
+        const expected = checker.getContextualType(tsNode as ts.Expression);
+        if (!expected || !ignoresReturn(expected, checker)) continue;
+        if (returnsResult(services.getTypeAtLocation(arg), checker)) {
+          context.report({ messageId: "mustUseCallback", node: arg });
+        }
+      }
+    }
+
     return {
       ExpressionStatement(node) {
-        const type = services.getTypeAtLocation(node.expression);
-        if (isResultLike(type, checker)) {
-          context.report({ messageId: "mustUse", node: node.expression });
+        for (const expression of flattenSequence(node.expression)) {
+          // `r = getResult()` stores the Result; it does not discard it.
+          if (expression.type === AST_NODE_TYPES.AssignmentExpression) {
+            continue;
+          }
+          const type = services.getTypeAtLocation(expression);
+          if (carriesResult(type, checker)) {
+            context.report({ messageId: "mustUse", node: expression });
+          } else if (promisesResult(type, checker)) {
+            context.report({ messageId: "mustUseAsync", node: expression });
+          }
         }
       },
+      CallExpression: checkArguments,
+      NewExpression: checkArguments,
     };
   },
 });
 
-export const noUnwrap = createRule({
+const noUnwrap = createRule({
   name: "no-unwrap",
   meta: {
     type: "problem",
@@ -153,7 +240,12 @@ export const noUnwrap = createRule({
   },
 });
 
-export default {
+// The plugin object is the module's only export, so the CommonJS build can
+// set `module.exports` to it (tsup `cjsInterop`) and `require()` returns the
+// plugin itself instead of `{ default, ... }`.
+const plugin = {
   meta: { name: "@semyonf/kamchazky" },
   rules: { "must-use-result": mustUseResult, "no-unwrap": noUnwrap },
 };
+
+export default plugin;

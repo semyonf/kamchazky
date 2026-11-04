@@ -4,13 +4,8 @@
     "@tsconfig/strictest/tsconfig.json"
   ],
   "compilerOptions": {
-    "strict": true,
-    "exactOptionalPropertyTypes": true,
-    "noUncheckedIndexedAccess": true,
-    "esModuleInterop": true,
     "skipLibCheck": true,
-    "noEmit": true,
-    "isolatedModules": true
+    "noEmit": true
   },
   "include": ["src", "test"]
 }
