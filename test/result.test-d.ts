@@ -410,22 +410,59 @@ describe("Result.tryCatch types", () => {
 });
 
 describe("Result.tryCatch rejects async functions", () => {
-  test("async function is a compile error", () => {
+  test("async function: the result is not a Result", () => {
+    const r = Result.tryCatch(async () => 42);
+    expectTypeOf(r).not.toMatchTypeOf<Result<unknown, Error>>();
     // @ts-expect-error — use tryCatchAsync for functions returning a Promise
-    Result.tryCatch(async () => 42);
+    r.ok;
   });
 
-  test("Promise-returning function is a compile error", () => {
+  test("Promise-returning function: cannot be returned as a Result", () => {
     // @ts-expect-error — use tryCatchAsync for functions returning a Promise
-    Result.tryCatch(() => Promise.resolve(42));
+    const r: Result<Promise<number>> = Result.tryCatch(() =>
+      Promise.resolve(42)
+    );
+    expectTypeOf(r).toEqualTypeOf<Result<Promise<number>>>();
   });
 
-  test("Promise-returning function with mapper is a compile error", () => {
-    Result.tryCatch(
-      // @ts-expect-error — use tryCatchAsync for functions returning a Promise
+  test("Promise-returning function with mapper: cannot be mapped", () => {
+    const r = Result.tryCatch(
       () => Promise.resolve(42),
       () => new TypeError()
     );
+    // @ts-expect-error — use tryCatchAsync for functions returning a Promise
+    Result.map(r, (x) => x);
+  });
+
+  test("generic code compiles, as in 1.x", () => {
+    function safe<T>(f: () => T) {
+      return Result.tryCatch(f);
+    }
+    function safeMapped<T>(f: () => T) {
+      return Result.tryCatch(f, () => new TypeError());
+    }
+    class Repo<T> {
+      constructor(private readonly load: () => T) {}
+      get(): Result<T, Error> {
+        return Result.tryCatch(this.load);
+      }
+    }
+    expectTypeOf(safe(() => 1)).toEqualTypeOf<Result<number, Error>>();
+    expectTypeOf(safeMapped(() => 1)).toEqualTypeOf<
+      Result<number, TypeError>
+    >();
+    expectTypeOf(new Repo(() => "a").get()).toEqualTypeOf<
+      Result<string, Error>
+    >();
+  });
+
+  test("a Promise-bound generic is still caught", () => {
+    function run<P extends Promise<number>>(f: () => P) {
+      return Result.tryCatch(f);
+    }
+    expectTypeOf(run(() => Promise.resolve(1))).not.toMatchTypeOf<
+      Result<unknown, Error>
+    >();
   });
 
   test("throwing function infers never", () => {
@@ -689,11 +726,14 @@ describe("collect error types", () => {
   });
 });
 
-describe("tryCatch rejects a Promise in a union", () => {
-  test("number | Promise<number> is a compile error", () => {
+describe("tryCatch and a Promise in a union", () => {
+  // Limitation: overloads can only catch a return type that is entirely
+  // a Promise.  At runtime such a call returns Err(TypeError).
+  test("number | Promise<number> is not caught at compile time", () => {
     const f = (): number | Promise<number> => 1;
-    // @ts-expect-error — may return a Promise
-    Result.tryCatch(f);
+    expectTypeOf(Result.tryCatch(f)).toEqualTypeOf<
+      Result<number | Promise<number>, Error>
+    >();
   });
 });
 
@@ -723,5 +763,63 @@ describe("error classes need a distinguishing member", () => {
     // @ts-expect-error — Error has no `name: "NotFound"`
     const r: Result<number, NotFound> = err(new Error("x"));
     expectTypeOf(r).toEqualTypeOf<Result<number, NotFound>>();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Async callbacks in sync combinators
+// ---------------------------------------------------------------------------
+
+describe("Result.map rejects async callbacks", () => {
+  const r = ok(1) as Result<number, TypeError>;
+
+  test("async callback: the result is not a Result", () => {
+    const mapped = Result.map(r, async (x) => x + 1);
+    expectTypeOf(mapped).not.toMatchTypeOf<Result<unknown, Error>>();
+    // @ts-expect-error — map does not await
+    mapped.ok;
+  });
+
+  test("on an Ok input too", () => {
+    // @ts-expect-error — map does not await
+    Result.map(ok(1), (x) => Promise.resolve(x)).ok;
+  });
+
+  test("generic callback compiles, as in 1.x", () => {
+    function mapAll<U>(res: Result<number, TypeError>, f: (n: number) => U) {
+      return Result.map(res, f);
+    }
+    expectTypeOf(mapAll(r, String)).toEqualTypeOf<Result<string, TypeError>>();
+  });
+
+  test("sync, any and throwing callbacks keep their types", () => {
+    expectTypeOf(Result.map(r, String)).toEqualTypeOf<
+      Result<string, TypeError>
+    >();
+    expectTypeOf(Result.map(ok(1), String)).toEqualTypeOf<OkResult<string>>();
+    expectTypeOf(Result.map(r, () => JSON.parse("1"))).toEqualTypeOf<
+      // biome-ignore lint/suspicious/noExplicitAny: JSON.parse returns any
+      Result<any, TypeError>
+    >();
+    expectTypeOf(
+      Result.map(r, () => {
+        throw new Error();
+      })
+    ).toEqualTypeOf<Result<never, TypeError>>();
+  });
+
+  test("other callbacks already reject async functions", () => {
+    // @ts-expect-error — flatMap needs a Result, not a Promise
+    Result.flatMap(r, async (x) => ok(x));
+    // @ts-expect-error — orElse needs a Result, not a Promise
+    Result.orElse(r, async () => ok(0));
+    Result.fromPredicate(
+      1,
+      // @ts-expect-error — a predicate must return boolean; a Promise is always truthy
+      async () => true,
+      () => new TypeError()
+    );
+    // @ts-expect-error — mapError needs an Error, not a Promise
+    Result.mapError(r, async () => new TypeError());
   });
 });

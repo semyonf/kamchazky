@@ -602,14 +602,42 @@ describe("Result.tryCatch", () => {
     ).toThrow(bug);
   });
 
-  test("returns Err instead of Ok(Promise) for an async fn", async () => {
+  test("returns Err(TypeError) instead of Ok(Promise) for an async fn", () => {
     const rejection = Promise.reject(new Error("db down"));
-    rejection.catch(() => {}); // the test only checks the Result
-    // @ts-expect-error — async functions belong to tryCatchAsync
-    const r = Result.tryCatch(() => rejection);
+    // Typed as a plain function, as plain JavaScript or `any` would be.
+    const fn: () => unknown = () => rejection;
+    const r = Result.tryCatch(fn);
     expect(r.ok).toBe(false);
     expect(!r.ok && r.error).toBeInstanceOf(TypeError);
     expect(!r.ok && r.error.message).toContain("tryCatchAsync");
+    expect(!r.ok && r.error.cause).toBe(rejection);
+  });
+
+  test("does not leave an unhandled rejection behind", async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      const fn: () => unknown = async () => {
+        throw new Error("db down");
+      };
+      Result.tryCatch(fn);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+    expect(unhandled).toEqual([]);
+  });
+
+  test("a value whose `then` getter throws is an Ok", () => {
+    const weird = {
+      // biome-ignore lint/suspicious/noThenProperty: the test needs a hostile thenable
+      get then(): unknown {
+        throw new Error("getter");
+      },
+    };
+    const r = Result.tryCatch(() => weird);
+    expect(r.ok && r.value).toBe(weird);
   });
 
   test("allows functions returning any", () => {
@@ -971,5 +999,83 @@ describe("combinators accept an array", () => {
   test("a single Result argument is still the rest form", () => {
     const r = Result.all(ok([1, 2]));
     expect(r.ok && r.value).toEqual([[1, 2]]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Hostile values: revoked Proxy, throwing getters, fake Errors
+// ---------------------------------------------------------------------------
+
+describe("hostile values never make a function throw", () => {
+  const revoked = () => {
+    const { proxy, revoke } = Proxy.revocable({}, {});
+    revoke();
+    return proxy;
+  };
+
+  test("tryCatch with a thrown revoked Proxy", () => {
+    const thrown = revoked();
+    const r = Result.tryCatch(() => {
+      throw thrown;
+    });
+    expect(!r.ok && r.error.message).toBe("Non-Error object thrown");
+    expect(!r.ok && r.error.cause).toBe(thrown);
+  });
+
+  test("err() with a revoked Proxy", () => {
+    const r = err(revoked() as unknown as Error);
+    expect(r.error).toBeInstanceOf(Error);
+  });
+
+  test("normalizeError with a revoked Proxy", () => {
+    expect(normalizeError(revoked()).message).toBe("Non-Error object thrown");
+  });
+
+  test("tryCatchAsync / fromPromise / allAsync / collectAsync", async () => {
+    const a = await Result.tryCatchAsync(() => Promise.reject(revoked()));
+    const b = await Result.fromPromise(Promise.reject(revoked()));
+    const c = await Result.allAsync(
+      Promise.reject(revoked()) as Promise<Result<number>>
+    );
+    const d = await Result.collectAsync(
+      Promise.reject(revoked()) as Promise<Result<number>>
+    );
+    expect([a.ok, b.ok, c.ok, d.ok]).toEqual([false, false, false, false]);
+  });
+
+  test("isResult with a revoked Proxy or a throwing getter", () => {
+    expect(Result.isResult(revoked())).toBe(false);
+    const getter = {
+      get ok(): boolean {
+        throw new Error("getter");
+      },
+    };
+    expect(Result.isResult(getter)).toBe(false);
+  });
+
+  test("exhaustive throws its own error for a revoked Proxy", () => {
+    const value = revoked();
+    let caught: unknown;
+    try {
+      Result.exhaustive(value as never);
+    } catch (e) {
+      caught = e;
+    }
+    expect((caught as Error).message).toBe(
+      "Unhandled result case: <unprintable value>"
+    );
+    expect((caught as Error).cause).toBe(value);
+  });
+
+  test("a fake Error via Symbol.toStringTag is normalized", () => {
+    const fake = { [Symbol.toStringTag]: "Error" };
+    const r = err(fake as unknown as Error);
+    expect(r.error).not.toBe(fake);
+    expect(typeof r.error.message).toBe("string");
+  });
+
+  test("an Error-shaped object without a string message is normalized", () => {
+    const bad = Object.assign(new Error("x"), { message: 42 });
+    expect(typeof normalizeError(bad).message).toBe("string");
   });
 });

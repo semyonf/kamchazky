@@ -103,6 +103,22 @@ ruleTester.run("must-use-result", plugin.rules["must-use-result"], {
       code: `${resultType}\ndeclare function getResult(): R<number>;\ndeclare function onEvent(cb?: () => void): void;\nonEvent(getResult);`,
       errors: [{ messageId: "mustUseCallback" }],
     },
+    // A sort of a freshly mapped array still drops new Results.
+    {
+      code: `${resultType}\ndeclare function validate(x: number): R<number>;\ndeclare const items: number[];\ndeclare function cmp(a: R<number>, b: R<number>): number;\nitems.map(validate).sort(cmp);`,
+      errors: [{ messageId: "mustUse" }],
+    },
+    // \`.catch\` handles only a rejection; the resolved Result is still lost.
+    // Use \`void save();\` to discard on purpose.
+    {
+      code: `${resultType}\ndeclare function save(): Promise<R<number>>;\nsave().catch(() => undefined);`,
+      errors: [{ messageId: "mustUseAsync" }],
+    },
+    // A user function named like an array method is not special.
+    {
+      code: `${resultType}\ndeclare const api: { sort(): R<number>[] };\napi.sort();`,
+      errors: [{ messageId: "mustUse" }],
+    },
   ],
   valid: [
     {
@@ -167,6 +183,31 @@ ruleTester.run("must-use-result", plugin.rules["must-use-result"], {
     },
     {
       code: `declare const items: number[];\nitems.forEach((x) => x * 2);`,
+    },
+    // Calls that return their receiver or argument: no Result is lost.
+    {
+      code: `${resultType}\ndeclare const results: R<number>[];\ndeclare function cmp(a: R<number>, b: R<number>): number;\nresults.sort(cmp);`,
+    },
+    {
+      code: `${resultType}\ndeclare const results: R<number>[];\nresults.reverse();`,
+    },
+    {
+      code: `${resultType}\ndeclare const results: R<number>[];\ndeclare const r: R<number>;\nresults.fill(r);`,
+    },
+    {
+      code: `${resultType}\ndeclare const results: R<number>[];\nresults.copyWithin(0, 1);`,
+    },
+    {
+      code: `${resultType}\ndeclare const results: R<number>[];\nObject.freeze(results);`,
+    },
+    {
+      code: `${resultType}\ndeclare const r: R<number>;\nObject.freeze(r);`,
+    },
+    {
+      code: `${resultType}\ndeclare const results: R<number>[];\nObject.seal(results);\nObject.preventExtensions(results);`,
+    },
+    {
+      code: `${resultType}\ndeclare function save(): Promise<R<number>>;\nvoid save();`,
     },
   ],
 });

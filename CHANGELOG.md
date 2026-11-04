@@ -40,8 +40,10 @@
 
   Library:
 
-  - `Result.unwrapOrElse` now passes the error to the fallback function.
-  - `Result.fromPredicate` now passes the rejected value to the error factory.
+  - **Breaking:** `Result.unwrapOrElse` now passes the error to the fallback
+    function. _(Corrected in 2.0.1: this was listed as non-breaking.)_
+  - **Breaking:** `Result.fromPredicate` now passes the rejected value to the
+    error factory. _(Corrected in 2.0.1: this was listed as non-breaking.)_
   - **Breaking:** `Result.tryCatch` rejects Promise-returning functions at compile time.
     At runtime it returns `Err(TypeError)` instead of `Ok(Promise)`, whose
     rejection nobody caught.
@@ -84,8 +86,11 @@
     discriminant (`ok`, `some`), so `{ some: boolean }` shapes are not
     treated as a Maybe.
 
-  The `unwrapOrElse` and `fromPredicate` callback changes are
-  backwards-compatible — existing zero-argument callbacks remain valid.
+  The `unwrapOrElse` and `fromPredicate` callback changes break callbacks
+  with an optional first parameter: `(m?: string) => new Error(m ?? "x")`
+  used to get `undefined` and now gets the value. Zero-argument callbacks
+  are not affected. _(Corrected in 2.0.1: this paragraph said the changes
+  were backwards-compatible.)_
 
 ## 1.3.0
 
