@@ -356,3 +356,43 @@ describe("Maybe precision", () => {
     >();
   });
 });
+
+describe("Maybe.firstSome explicit type argument (1.x form)", () => {
+  test("firstSome<number>(...) compiles", () => {
+    expectTypeOf(M.firstSome<number>(some(1), some(2))).toEqualTypeOf<
+      Maybe<number>
+    >();
+    expectTypeOf(M.firstSome<number>([some(1)])).toEqualTypeOf<Maybe<number>>();
+  });
+});
+
+describe("Maybe.map rejects async callbacks", () => {
+  const m = some(1) as Maybe<number>;
+
+  test("async callback: the result is not a Maybe", () => {
+    const mapped = M.map(m, async (x) => x + 1);
+    expectTypeOf(mapped).not.toMatchTypeOf<Maybe<unknown>>();
+    // @ts-expect-error — map does not await
+    mapped.some;
+  });
+
+  test("generic callback compiles", () => {
+    function mapAll<U>(mm: Maybe<number>, f: (n: number) => U) {
+      return M.map(mm, f);
+    }
+    expectTypeOf(mapAll(m, String)).toEqualTypeOf<Maybe<string>>();
+  });
+
+  test("sync callbacks keep their types", () => {
+    expectTypeOf(M.map(m, String)).toEqualTypeOf<Maybe<string>>();
+    expectTypeOf(M.map(some(1), String)).toEqualTypeOf<Some<string>>();
+    expectTypeOf(M.map(none(), String)).toEqualTypeOf<None>();
+  });
+
+  test("filter and flatMap already reject async functions", () => {
+    // @ts-expect-error — a predicate must return boolean
+    M.filter(m, async () => true);
+    // @ts-expect-error — flatMap needs a Maybe, not a Promise
+    M.flatMap(m, async (x) => some(x));
+  });
+});

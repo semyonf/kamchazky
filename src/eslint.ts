@@ -130,6 +130,22 @@ function returnsResult(type: ts.Type, checker: ts.TypeChecker): boolean {
   );
 }
 
+/** Array methods that return their receiver, and `Object.*` functions that
+ *  return their argument.  The value they return is the one they got. */
+const RETURNS_RECEIVER = new Set(["sort", "reverse", "fill", "copyWithin"]);
+const RETURNS_ARGUMENT = new Set(["freeze", "seal", "preventExtensions"]);
+
+/** A stored value: discarding a reference to it loses nothing. */
+function isReference(node: TSESTree.Node): boolean {
+  return (
+    node.type === AST_NODE_TYPES.Identifier ||
+    node.type === AST_NODE_TYPES.MemberExpression ||
+    node.type === AST_NODE_TYPES.ThisExpression ||
+    (node.type === AST_NODE_TYPES.TSNonNullExpression &&
+      isReference(node.expression))
+  );
+}
+
 /** A sequence expression discards every sub-expression, including the last
  *  one (the whole statement is itself discarded), so check them all. */
 function flattenSequence(
@@ -177,6 +193,36 @@ const mustUseResult = createRule({
       }
     }
 
+    /** `results.sort(cmp)` → `results`, `Object.freeze(r)` → `r`. */
+    function identityTarget(
+      node: TSESTree.Expression
+    ): TSESTree.Expression | undefined {
+      if (
+        node.type !== AST_NODE_TYPES.CallExpression ||
+        node.callee.type !== AST_NODE_TYPES.MemberExpression
+      ) {
+        return undefined;
+      }
+      const name = memberName(node.callee);
+      if (name === undefined) return undefined;
+      const receiver = node.callee.object;
+      if (RETURNS_RECEIVER.has(name)) {
+        const type = services.getTypeAtLocation(receiver);
+        if (checker.isArrayType(type) || checker.isTupleType(type)) {
+          return receiver;
+        }
+      }
+      if (
+        RETURNS_ARGUMENT.has(name) &&
+        receiver.type === AST_NODE_TYPES.Identifier &&
+        receiver.name === "Object"
+      ) {
+        const [arg] = node.arguments;
+        if (arg && arg.type !== AST_NODE_TYPES.SpreadElement) return arg;
+      }
+      return undefined;
+    }
+
     return {
       ExpressionStatement(node) {
         for (const expression of flattenSequence(node.expression)) {
@@ -184,7 +230,19 @@ const mustUseResult = createRule({
           if (expression.type === AST_NODE_TYPES.AssignmentExpression) {
             continue;
           }
-          const type = services.getTypeAtLocation(expression);
+          // `results.sort(cmp)` hands back the same array: judge `results`.
+          // A stored array loses nothing; `items.map(validate).sort(cmp)`
+          // still drops the Results that `map` created.
+          let target: TSESTree.Expression = expression;
+          for (
+            let inner = identityTarget(target);
+            inner;
+            inner = identityTarget(target)
+          ) {
+            target = inner;
+          }
+          if (target !== expression && isReference(target)) continue;
+          const type = services.getTypeAtLocation(target);
           if (carriesResult(type, checker)) {
             context.report({ messageId: "mustUse", node: expression });
           } else if (promisesResult(type, checker)) {

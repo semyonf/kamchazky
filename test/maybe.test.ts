@@ -500,3 +500,14 @@ describe("Maybe combinators accept an array", () => {
     expect(m.some && m.value).toEqual([[1, 2]]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// None is one object across the CJS and ESM builds
+// ---------------------------------------------------------------------------
+
+describe("None identity", () => {
+  test("none() is registered under a global symbol", () => {
+    const key = Symbol.for("@semyonf/kamchazky/none");
+    expect((globalThis as Record<symbol, unknown>)[key]).toBe(none());
+  });
+});

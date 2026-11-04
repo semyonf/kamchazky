@@ -62,7 +62,7 @@ type ErrResult<E extends Error> = {
 
 ### API
 
-All functions are available on the `Result` namespace and the most common ones (`ok`, `err`, `isOk`, `isErr`, `normalizeError`) are also exported at the top level.
+All functions are available on the `Result` namespace and the most common ones (`ok`, `err`, `isResult`, `isOk`, `isErr`, `normalizeError`) are also exported at the top level.
 
 #### Creating results
 
@@ -103,7 +103,14 @@ Result.tryCatch(
 ); // Result<unknown, ParseError>
 ```
 
-`tryCatch` is for synchronous code only. Passing a function that returns a Promise is a compile error, because `tryCatch` cannot catch a rejection it does not await — use `tryCatchAsync`. If such a call slips through at runtime (plain JavaScript, `any`), the result is an `Err(TypeError)`, not an `Ok` holding the Promise.
+`tryCatch` is for synchronous code only: it cannot catch a rejection it does not await, so use `tryCatchAsync` for async functions. For a function that returns a Promise, `tryCatch` does not return a `Result` type, so the first use of the result is a compile error that names `tryCatchAsync`:
+
+```typescript
+const r = Result.tryCatch(async () => save());
+r.ok; // ❌ Property 'ok' does not exist — "Use Result.tryCatchAsync …"
+```
+
+The check is made with overloads, so generic code compiles: `<T>(f: () => T) => Result.tryCatch(f)` returns `Result<T, Error>`. Two cases are not caught at compile time: a return type that is only partly a Promise (`number | Promise<number>`) and a call whose result is never used. At runtime a returned Promise gives `Err(TypeError)` with the Promise as `cause`, never an `Ok` holding it, and its rejection does not crash the process as an unhandled rejection.
 
 Whatever `onError` throws propagates unchanged: `tryCatch` throws it, `tryCatchAsync` and `fromPromise` reject with it. This lets a mapper turn known errors into `Err` and let the rest through:
 
@@ -148,6 +155,8 @@ Result.inspect(result, (value) => console.log("got", value));
 Result.inspectError(result, (error) => console.error(error));
 ```
 
+`map` does not await. An async callback would give `Ok(Promise)`, and a rejection of that Promise would be lost, so the types reject it: the result of `Result.map(r, async (v) => …)` is not a `Result`, and its first use is a compile error. Await the value first, or wrap the async work in `Result.tryCatchAsync`. `Maybe.map` works the same way. Like `tryCatch`, this is checked with overloads: generic callbacks compile, and a callback that returns `T | Promise<T>` is not caught. The runtime does not check it.
+
 #### Extracting values
 
 ```typescript
@@ -157,7 +166,9 @@ Result.unwrapOr(result, fallback);  // returns value or fallback (same type)
 Result.unwrapOrElse(result, (error) => computeFallback(error));
 ```
 
-`unwrapOr` and `unwrapOrElse` require the fallback to be the same type `T` as the success value. Use `match` when you need a different return type.
+`unwrapOr` and `unwrapOrElse` take a fallback of the success type `T`: `Result.unwrapOr(r, "x")` on a `Result<number, E>` is a compile error. `null` and `undefined` are the exception, TypeScript adds them to `T`: `Result.unwrapOr(r, null)` gives `number | null`. Use `match` when you need a different return type.
+
+The `unwrapOrElse` callback receives the error, and the `fromPredicate` error factory receives the rejected value (since 2.0). A callback with an optional first parameter now gets that argument instead of `undefined`: `(m?: string) => new Error(m ?? "default")` receives the value.
 
 `split` turns a `Result` into a `[failure, value]` tuple, for early returns without `.value`:
 
@@ -191,25 +202,26 @@ return Result.exhaustive(result); // compiles only if all cases are handled
 ```typescript
 // Combine multiple results — fail-fast, returns first error
 const r = Result.all(fetchUser(id), fetchPosts(id));
-// Result<[User, Post[]], Error>
+// Result<readonly [User, Post[]], UserError | PostError>
 
-// Async variant — resolves all promises concurrently
+// Async variant — resolves all promises concurrently. A rejected promise
+// becomes an Err with a normalized Error, hence the extra `| Error`.
 const r = await Result.allAsync(fetchUserAsync(id), fetchPostsAsync(id));
-// Result<[User, Post[]], Error>
+// Result<readonly [User, Post[]], UserError | PostError | Error>
 
 // Collect all errors instead of failing fast
 const r = Result.collect(
   validateName(input.name),
   validateEmail(input.email),
   validateAge(input.age),
-); // Result<[Name, Email, Age], AggregateError>
-// On failure: r.error.errors contains all individual errors, typed —
-// AggregateErrorOf<NameError | EmailError | AgeError>, not AggregateError's any[]
+); // Result<readonly [Name, Email, Age], AggregateErrorOf<NameError | EmailError | AgeError>>
+// On failure: r.error is an AggregateError; r.error.errors holds every
+// individual error, typed (NameError | EmailError | AgeError)[], not any[]
 
 // Async variant of collect — resolves all promises, gathers every error
 // (including raw rejections, which are normalized to Error)
 const r = await Result.collectAsync(fetchA(), fetchB(), fetchC());
-// Result<[A, B, C], AggregateError>
+// Result<readonly [A, B, C], AggregateErrorOf<AError | BError | CError | Error>>
 ```
 
 Every combinator also takes one array, for a dynamic list:
@@ -380,8 +392,6 @@ npm install @semyonf/kamchazky @typescript-eslint/parser @typescript-eslint/util
 
 The rule is type-aware, so typed linting must be enabled (`projectService`; see the [typescript-eslint typed linting docs](https://typescript-eslint.io/getting-started/typed-linting)):
 
-CommonJS configs work too: `require("@semyonf/kamchazky/eslint")` returns the plugin object.
-
 ```js
 // eslint.config.mjs (flat config)
 import kamchazky from "@semyonf/kamchazky/eslint";
@@ -403,6 +413,8 @@ export default [
 ];
 ```
 
+CommonJS configs work too: `require("@semyonf/kamchazky/eslint")` returns the plugin object.
+
 Legacy `.eslintrc` config is not supported: legacy plugin resolution requires the `eslint-plugin-*` package naming convention, which this package does not follow. Use flat config (default since ESLint 9).
 
 ### What it catches
@@ -418,6 +430,8 @@ maybeGetResult();         // ❌ Result<T, E> | null is still a Result
 items.map(validate);      // ❌ array of Results discarded
 await Promise.all(items.map(save)); // ❌ array of Results discarded
 items.forEach(validate);  // ❌ forEach ignores what validate returns
+items.map(validate).sort(cmp); // ❌ sort returns the fresh array from map
+save().catch(() => undefined); // ❌ catch handles a rejection; a resolved Err is still lost
 
 // ✅ Allowed
 const r = getResult();    // assigned
@@ -425,14 +439,17 @@ r = getResult();          // reassigned
 return getResult();       // returned
 getResult().ok;           // read
 doSomething(getResult()); // passed as argument
-void getResult();         // allowed — void expression type is undefined, not Result
+results.sort(cmp);        // returns the same stored array — nothing is lost
+Object.freeze(results);   // returns its argument — nothing is lost
+void save();              // an intentional discard, e.g. fire and forget
 ```
 
 The rule uses TypeScript's type checker, so it works with any type that structurally matches a `Result` — not just `@semyonf/kamchazky` types. To avoid false positives on API response shapes like `{ ok: boolean; error?: string }`, the `ok` discriminant must be a literal `true`/`false` — a plain `boolean` gives no narrowing and is not treated as a Result.
 
 ### Limitations
 
-- **`void` is an escape hatch.** `void getResult();` evaluates to `undefined`, so the rule sees no `Result` type and does not flag it. Use `// eslint-disable-next-line` for intentional discards instead.
+- **`void` marks an intentional discard.** `void getResult();` evaluates to `undefined`, so the rule does not flag it. Write `void` only where losing the error is really fine; it is visible in review, unlike a silent discard.
+- **Only known identity calls are skipped.** `sort`, `reverse`, `fill` and `copyWithin` on an array, and `Object.freeze` / `seal` / `preventExtensions`, return what they got, so on a stored array they are allowed. Another function that returns its argument is still flagged.
 - **Only unions with nullish extras are detected.** `Result<T, E> | null | undefined` is caught, but a union with any other non-Result member (e.g. `Result<T, E> | string`) is skipped.
 - **Callbacks are checked only where the parameter returns `void`.** `forEach(validate)` is flagged. A parameter typed `() => unknown` may use the return value, so passing a Result-returning function there is allowed.
 - **An assigned Result is not tracked further.** `r = getResult();` is allowed even if `r` is never read; TypeScript's `noUnusedLocals` covers unused variables.
@@ -447,11 +464,6 @@ rules: {
   "kamchazky/must-use-result": "error",
   "kamchazky/no-unwrap": "error",
 },
-```
-
-```jsonc
-// .eslintrc.json (legacy config)
-"rules": { "@semyonf/kamchazky/no-unwrap": "error" }
 ```
 
 In tests a throw is what you want, since the test fails with the thrown error. Turn the rule off there:
@@ -501,11 +513,11 @@ const r: Result<User, NotFound> = err(new Error("x")); // ❌ compile error
 
 **No `unknown` or `Error` where nothing can be inferred** — an error or value type that has no source becomes `never`. `Result.orElse(r, () => ok(0))` is `Result<number, never>`, `Result.flatMap(r, () => err(e))` is `Result<never, …>`, `Maybe.firstSome(none(), none())` is `Maybe<never>`.
 
-**Singleton `None`** — `none()` always returns the same frozen object. Safe to compare with `===`.
+**Singleton `None`** — `none()` always returns the same frozen object, also when both the CommonJS and the ESM build are loaded in one process (it is registered under `Symbol.for("@semyonf/kamchazky/none")`). Safe to compare with `===`.
 
 **Fail-fast `all()`** — returns the first error/None rather than collecting all errors. Use `Result.collect()` when you need all errors (e.g., validation).
 
-**`collect()` uses `AggregateError`** — a standard ES2021 `Error` subclass with an `.errors` array, satisfying the `E extends Error` constraint without custom types.
+**`collect()` uses `AggregateError`** — a standard ES2021 `Error` subclass with an `.errors` array, satisfying the `E extends Error` constraint. Its type is `AggregateErrorOf<E>`, an `AggregateError` whose `.errors` is `E[]` instead of the built-in `any[]`.
 
 **`flatten()` supports different error types** — inner and outer `Result`s can have different error types; the result unions them (`E | F`).
 

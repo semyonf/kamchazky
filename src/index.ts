@@ -77,13 +77,19 @@ function err<E extends Error>(error: E): ErrResult<E> {
  * `{ ok: false, error }` with an `Error`.  For decorators, interceptors and
  * other generic code that receives `unknown`.  Matches by shape, so a
  * structurally equal object from another copy of the library passes too.
+ * Never throws.
  */
 function isResult(value: unknown): value is Result<unknown, Error> {
   if (typeof value !== "object" || value === null) return false;
-  const r = value as { ok?: unknown; error?: unknown };
-  if (r.ok === true) return "value" in r;
-  if (r.ok === false) return isError(r.error);
-  return false;
+  try {
+    const r = value as { ok?: unknown; error?: unknown };
+    if (r.ok === true) return "value" in r;
+    if (r.ok === false) return isError(r.error);
+    return false;
+  } catch {
+    // A revoked Proxy or a throwing getter is not a Result.
+    return false;
+  }
 }
 
 /** Narrow a `Result` to `OkResult`. */
@@ -98,7 +104,30 @@ function isErr<T, E extends Error>(
   return !result.ok;
 }
 
-/** Transform the value inside an `Ok`, leaving `Err` unchanged. */
+/**
+ * The return type of `map` for a callback that returns a Promise.  It is
+ * not a `Result`: `Ok(Promise)` would hide a rejection nobody awaits.
+ * `never` (a callback that only throws) and `any` keep the normal type.
+ */
+type AsyncInMap<U, R> = [U] extends [never]
+  ? R
+  : 0 extends 1 & U
+    ? R
+    : {
+        readonly "Result.map does not await. Await the value first, or use Result.tryCatchAsync for async work": never;
+      };
+
+/**
+ * Transform the value inside an `Ok`, leaving `Err` unchanged.
+ *
+ * An async callback is rejected by the types: the result is not a `Result`,
+ * so its first use is a compile error.  Generic callbacks compile.  The
+ * runtime does not check this.
+ */
+function map<T, U extends PromiseLike<unknown>, E extends Error = never>(
+  result: Result<T, E>,
+  fn: (value: T) => U
+): AsyncInMap<U, Result<U, E>>;
 function map<T, U>(result: OkResult<T>, fn: (value: T) => U): OkResult<U>;
 function map<E extends Error>(
   result: ErrResult<E>,
@@ -216,15 +245,20 @@ function match<T = never, E extends Error = never, A = never, B = A>(
   return result.ok ? handlers.ok(result.value) : handlers.err(result.error);
 }
 
-/** Compile-time exhaustiveness guard — only accepts `never`. */
+/** Compile-time exhaustiveness guard — only accepts `never`.  At runtime
+ *  it throws `Unhandled result case: <value>`, with the value as `cause`. */
 function exhaustive(value: never): never {
   let detail: string;
   try {
     detail = JSON.stringify(value);
   } catch {
-    detail = String(value);
+    try {
+      detail = String(value);
+    } catch {
+      detail = "<unprintable value>";
+    }
   }
-  throw new Error(`Unhandled result case: ${detail}`);
+  throw new Error(`Unhandled result case: ${detail}`, { cause: value });
 }
 
 /** Return the `Ok` value or throw the contained error. */
@@ -302,12 +336,27 @@ function fromPredicate<T, E extends Error>(
   return predicate(value) ? ok(value) : err(errorFactory(value));
 }
 
-/** `instanceof Error`, plus Errors from another realm (vm, iframe). */
+const nativeIsError = (Error as { isError?: (value: unknown) => boolean })
+  .isError;
+
+/**
+ * An `Error` with a string `message`: `instanceof Error`, or an Error from
+ * another realm (vm, iframe).  Uses `Error.isError` where the runtime has
+ * it, so `{ [Symbol.toStringTag]: "Error" }` does not pass.  Never throws:
+ * a revoked Proxy or a throwing getter gives `false`.
+ */
 function isError(value: unknown): value is Error {
-  return (
-    value instanceof Error ||
-    Object.prototype.toString.call(value) === "[object Error]"
-  );
+  try {
+    const native = nativeIsError
+      ? nativeIsError(value)
+      : Object.prototype.toString.call(value) === "[object Error]";
+    return (
+      (value instanceof Error || native) &&
+      typeof (value as { message?: unknown }).message === "string"
+    );
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -350,39 +399,57 @@ function toError<E extends Error>(
 }
 
 function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
-  return (
-    ((typeof value === "object" && value !== null) ||
-      typeof value === "function") &&
-    typeof (value as { then?: unknown }).then === "function"
-  );
+  if (
+    (typeof value !== "object" || value === null) &&
+    typeof value !== "function"
+  ) {
+    return false;
+  }
+  try {
+    return typeof (value as { then?: unknown }).then === "function";
+  } catch {
+    return false;
+  }
 }
 
-/** Turns `fn`'s type into a compile error when it may return a Promise,
- *  including `number | Promise<number>`.  `any`, `unknown` and `never` stay
- *  allowed (`JSON.parse`, throwing functions). */
-type SyncOnly<T> = 0 extends 1 & T
-  ? unknown
-  : [T] extends [never]
-    ? unknown
-    : true extends (T extends PromiseLike<unknown> ? true : false)
-      ? {
-          "Result.tryCatch does not await. Use Result.tryCatchAsync for functions that return a Promise": never;
-        }
-      : unknown;
+/**
+ * The return type of `tryCatch` for a function that returns a Promise.  It
+ * is not a `Result`, so the first use — `.ok`, `Result.map(...)`, a return
+ * typed `Result` — is a compile error that names `tryCatchAsync`.
+ * A function that only throws (`never`) and `any` (`JSON.parse`) still get
+ * a `Result`.
+ */
+type AsyncInTryCatch<T, R> = [T] extends [never]
+  ? R
+  : 0 extends 1 & T
+    ? R
+    : {
+        readonly "Result.tryCatch does not await. Use Result.tryCatchAsync for functions that return a Promise": never;
+      };
 
 /**
  * Wrap a synchronous function that may throw into a `Result`.
  *
- * Functions that return a Promise are a compile error — use
- * `tryCatchAsync`.  If one slips through at runtime, the result is an
- * `Err(TypeError)`, never an `Ok` holding a Promise.
+ * For a function that returns a Promise the result type is not a `Result`,
+ * so using it does not compile — use `tryCatchAsync`.  The check is done by
+ * overloads, not by a conditional parameter type, so generic code such as
+ * `<T>(f: () => T) => Result.tryCatch(f)` compiles as before.  At runtime a
+ * returned Promise gives `Err(TypeError)` with the Promise as `cause`; its
+ * rejection is handled, so it does not crash the process.
  *
  * Whatever `onError` throws propagates unchanged: return an error to get an
  * `Err`, rethrow to let the error through.
  */
-function tryCatch<T>(fn: (() => T) & SyncOnly<T>): Result<T, Error>;
+function tryCatch<T extends PromiseLike<unknown>>(
+  fn: () => T
+): AsyncInTryCatch<T, Result<T, Error>>;
+function tryCatch<T extends PromiseLike<unknown>, E extends Error>(
+  fn: () => T,
+  onError: (error: unknown) => E
+): AsyncInTryCatch<T, Result<T, E>>;
+function tryCatch<T>(fn: () => T): Result<T, Error>;
 function tryCatch<T, E extends Error>(
-  fn: (() => T) & SyncOnly<T>,
+  fn: () => T,
   onError: (error: unknown) => E
 ): Result<T, E>;
 function tryCatch<T, E extends Error>(
@@ -396,9 +463,17 @@ function tryCatch<T, E extends Error>(
     return err(toError(error, onError));
   }
   if (isPromiseLike(value)) {
+    try {
+      // The caller gets an Err, so the rejection must not also crash the
+      // process as an unhandled rejection.  It stays reachable via `cause`.
+      value.then(undefined, () => {});
+    } catch {
+      // A thenable whose `then` throws — nothing to handle.
+    }
     return err(
       new TypeError(
-        "Result.tryCatch: fn returned a Promise, which tryCatch does not await. Use Result.tryCatchAsync."
+        "Result.tryCatch: fn returned a Promise, which tryCatch does not await. Use Result.tryCatchAsync.",
+        { cause: value }
       )
     );
   }
@@ -607,9 +682,13 @@ function some<T>(value: T): Some<T> {
   });
 }
 
-const NONE: None = Object.freeze({
-  some: false as const,
-});
+// One `None` per process, shared by the CJS and ESM builds (and any copy
+// of this version that a bundler duplicates), so `none() === none()` holds
+// even when both builds are loaded.
+const NONE_KEY = Symbol.for("@semyonf/kamchazky/none");
+const registry = globalThis as { [NONE_KEY]?: None };
+registry[NONE_KEY] ??= Object.freeze({ some: false as const });
+const NONE: None = registry[NONE_KEY];
 
 /** Create an empty `Maybe`. */
 function none(): None {
@@ -626,7 +705,27 @@ function isNone<T>(maybe: Maybe<T>): maybe is None {
   return !maybe.some;
 }
 
-/** Transform the value inside a `Some`, leaving `None` unchanged. */
+/**
+ * The return type of `Maybe.map` for a callback that returns a Promise; not
+ * a `Maybe`, see `AsyncInMap`.
+ */
+type AsyncInMaybeMap<U, R> = [U] extends [never]
+  ? R
+  : 0 extends 1 & U
+    ? R
+    : {
+        readonly "Maybe.map does not await. Await the value first": never;
+      };
+
+/**
+ * Transform the value inside a `Some`, leaving `None` unchanged.
+ *
+ * An async callback is rejected by the types, as in `Result.map`.
+ */
+function maybeMap<T, U extends PromiseLike<unknown>>(
+  maybe: Maybe<T>,
+  fn: (value: T) => U
+): AsyncInMaybeMap<U, Maybe<U>>;
 function maybeMap<T, U>(maybe: Some<T>, fn: (value: T) => U): Some<U>;
 function maybeMap(maybe: None, fn: (value: never) => unknown): None;
 function maybeMap<T, U>(maybe: Maybe<T>, fn: (value: T) => U): Maybe<U>;
@@ -759,6 +858,9 @@ function maybeFirstSome<const M extends readonly AnyMaybe[]>(
 function maybeFirstSome<const M extends readonly AnyMaybe[]>(
   ...maybes: M
 ): Maybe<MaybeValueOf<M[number]>>;
+// The 1.x form with an explicit type argument: `firstSome<number>(...)`.
+function maybeFirstSome<T>(maybes: readonly Maybe<T>[]): Maybe<T>;
+function maybeFirstSome<T>(...maybes: Maybe<T>[]): Maybe<T>;
 function maybeFirstSome(...args: readonly unknown[]): AnyMaybe {
   for (const m of listArgs<AnyMaybe>(args)) {
     if (m.some) return m;
