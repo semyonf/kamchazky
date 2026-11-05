@@ -1,3 +1,7 @@
+import { readFileSync } from "node:fs";
+import { createContext, runInContext } from "node:vm";
+
+import ts from "typescript";
 import { describe, expect, test, vi } from "vitest";
 import {
   err,
@@ -9,6 +13,13 @@ import {
   ok,
   some,
 } from "../src/index.js";
+
+/** `[a, <hole>, b]`: a sparse array, as `any` input can bring. */
+function holey<T>(a: T, b: T): T[] {
+  const items = [a];
+  items[2] = b;
+  return items;
+}
 
 // ---------------------------------------------------------------------------
 // Factories
@@ -124,6 +135,19 @@ describe("Maybe.flatten", () => {
     const m = M.flatten(some(none()));
     expect(m.some).toBe(false);
   });
+
+  // Through `any` only; 3.0.0 returned the value or a None.
+  test.each([
+    ["5", () => M.flatten(5 as never), "input"],
+    ["some(5)", () => M.flatten(some(5) as never), "value"],
+    [
+      "some({ some: true })",
+      () => M.flatten(some({ some: true }) as never),
+      "value",
+    ],
+  ])("%s throws a TypeError", (_, run, part) => {
+    expect(run).toThrow(new TypeError(`Maybe.flatten: ${part} is not a Maybe`));
+  });
 });
 
 describe("Maybe.filter", () => {
@@ -233,6 +257,29 @@ describe("Maybe.unwrapOrElse", () => {
   });
 });
 
+// Through `any` only, as for the Result functions.
+describe("extraction rejects an input that is not a Maybe", () => {
+  const inputs: [string, unknown][] = [
+    ["5", 5],
+    ["null", null],
+    ["{ some: true } without a value", { some: true }],
+    ["{ some: false, value: 1 }", { some: false, value: 1 }],
+  ];
+  const calls: [string, (input: never) => unknown][] = [
+    ["unwrap", (m) => M.unwrap(m)],
+    ["unwrapOr", (m) => M.unwrapOr(m, 0)],
+    ["unwrapOrElse", (m) => M.unwrapOrElse(m, () => 0)],
+    ["match", (m) => M.match(m, { some: () => 1, none: () => 2 })],
+  ];
+  describe.each(calls)("Maybe.%s", (name, call) => {
+    test.each(inputs)("%s throws a TypeError", (_, input) => {
+      expect(() => call(input as never)).toThrow(
+        new TypeError(`Maybe.${name}: input is not a Maybe`)
+      );
+    });
+  });
+});
+
 describe("Maybe.transpose", () => {
   test("Some(Ok(v)) -> Ok(Some(v))", () => {
     const m = M.transpose(some(ok(42)));
@@ -254,6 +301,19 @@ describe("Maybe.transpose", () => {
     if (m.ok) {
       expect(m.value.some).toBe(false);
     }
+  });
+
+  // Through `any` only; 3.0.0 returned an Ok or an Err.
+  test.each([
+    ["5", () => M.transpose(5 as never), "input is not a Maybe"],
+    ["some(5)", () => M.transpose(some(5) as never), "value is not a Result"],
+    [
+      "some({ ok: false, error: 'denied' })",
+      () => M.transpose(some({ ok: false, error: "denied" }) as never),
+      "value is not a Result",
+    ],
+  ])("%s throws a TypeError", (_, run, message) => {
+    expect(run).toThrow(new TypeError(`Maybe.transpose: ${message}`));
   });
 });
 
@@ -499,6 +559,19 @@ describe("Maybe combinators accept an array", () => {
     const m = M.all(some([1, 2]));
     expect(m.some && m.value).toEqual([[1, 2]]);
   });
+
+  test("point-free in map and Array.from", async () => {
+    const groups = [[some(1), some(2)], [none(), some(3)], []];
+    expect(groups.map(M.all)).toEqual([some([1, 2]), none(), some([])]);
+    // Array.from as plain JavaScript calls it; TypeScript rejects the call.
+    const from = Array.from as (items: unknown[], fn: unknown) => unknown[];
+    expect(from(groups, M.all)).toEqual(groups.map(M.all));
+    expect(groups.map(M.firstSome)).toEqual([some(1), some(3), none()]);
+    const pending = groups.map((g) => g.map((m) => Promise.resolve(m)));
+    expect(await Promise.all(pending.map(M.allAsync))).toEqual(
+      groups.map(M.all)
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -506,8 +579,136 @@ describe("Maybe combinators accept an array", () => {
 // ---------------------------------------------------------------------------
 
 describe("None identity", () => {
+  const key = Symbol.for("@semyonf/kamchazky/none");
+  const registry = globalThis as Record<symbol, unknown>;
+
   test("none() is registered under a global symbol", () => {
-    const key = Symbol.for("@semyonf/kamchazky/none");
-    expect((globalThis as Record<symbol, unknown>)[key]).toBe(none());
+    expect(registry[key]).toBe(none());
+  });
+
+  test("the registration cannot be overwritten", () => {
+    expect(() => {
+      registry[key] = { some: true, value: 1 };
+    }).toThrow(TypeError);
+    expect(registry[key]).toBe(none());
+  });
+
+  test("another copy of the library reuses the registered None", async () => {
+    vi.resetModules();
+    const copy = await import("../src/index.js");
+    expect(copy.none()).toBe(none());
+  });
+});
+
+/** The library compiled to CommonJS, to load it into a fresh vm realm. */
+const moduleSource = ts.transpileModule(
+  readFileSync(new URL("../src/index.ts", import.meta.url), "utf8"),
+  {
+    compilerOptions: {
+      module: ts.ModuleKind.CommonJS,
+      target: ts.ScriptTarget.ES2022,
+    },
+  }
+).outputText;
+
+describe("a foreign value under the registry key is not used as None", () => {
+  // The real registration is non-configurable, so each case runs in a
+  // fresh realm with its own global object.
+  const load = (setup: string) => {
+    const context = createContext({});
+    runInContext(setup, context);
+    const exports: Record<string, unknown> = {};
+    runInContext(`(function (exports) { ${moduleSource} })`, context)(exports);
+    return exports as { none: () => unknown; Maybe: typeof M };
+  };
+
+  test.each([
+    [
+      "a Some",
+      `globalThis[Symbol.for("@semyonf/kamchazky/none")] = { some: true, value: "x" };`,
+    ],
+    [
+      "a mutable { some: false }",
+      `globalThis[Symbol.for("@semyonf/kamchazky/none")] = { some: false };`,
+    ],
+    [
+      "a frozen None with extra keys",
+      `globalThis[Symbol.for("@semyonf/kamchazky/none")] = Object.freeze({ some: false, value: 1 });`,
+    ],
+    [
+      "a throwing getter",
+      `Object.defineProperty(globalThis, Symbol.for("@semyonf/kamchazky/none"), { get() { throw new Error("x"); } });`,
+    ],
+  ])("%s", (_, setup) => {
+    const lib = load(setup);
+    const n = lib.none();
+    expect(n).toEqual({ some: false });
+    expect(Object.isFrozen(n)).toBe(true);
+    expect(lib.Maybe.isNone(n as never)).toBe(true);
+    expect(lib.none()).toBe(n);
+  });
+
+  test("a frozen None from another copy is reused", () => {
+    const context = createContext({});
+    const shared = runInContext(
+      `globalThis[Symbol.for("@semyonf/kamchazky/none")] = Object.freeze({ some: false });`,
+      context
+    );
+    const exports: Record<string, unknown> = {};
+    runInContext(`(function (exports) { ${moduleSource} })`, context)(exports);
+    expect((exports as { none: () => unknown }).none()).toBe(shared);
+  });
+});
+
+describe("Maybe combinators reject items that are not Maybes", () => {
+  const bad = (x: unknown) => x as Maybe<number>;
+
+  test.each([
+    ["all([[some(1)]])", () => M.all([bad([some(1)])]), "Maybe.all: item 0"],
+    ["all([null])", () => M.all([bad(null)]), "Maybe.all: item 0"],
+    [
+      "all(sparse)",
+      () => M.all(holey(some(1), some(2)) as Maybe<number>[]),
+      "Maybe.all: item 1",
+    ],
+    [
+      "firstSome(sparse)",
+      () =>
+        M.firstSome(holey<Maybe<number>>(none(), some(2)) as Maybe<number>[]),
+      "Maybe.firstSome: item 1",
+    ],
+    ["firstSome([1])", () => M.firstSome([bad(1)]), "Maybe.firstSome: item 0"],
+  ])("%s throws a TypeError", (_, run, message) => {
+    expect(run).toThrow(new TypeError(`${message} is not a Maybe`));
+  });
+
+  test.each([
+    ["a Some without a value", { some: true }],
+    ["a None with a value", { some: false, value: 1 }],
+  ])("all, firstSome and allAsync reject %s", async (_, item) => {
+    expect(() => M.all([bad(item)])).toThrow(
+      new TypeError("Maybe.all: item 0 is not a Maybe")
+    );
+    expect(() => M.firstSome([bad(item)])).toThrow(
+      new TypeError("Maybe.firstSome: item 0 is not a Maybe")
+    );
+    await expect(M.allAsync([Promise.resolve(bad(item))])).rejects.toThrow(
+      new TypeError("Maybe.allAsync: item 0 is not a Maybe")
+    );
+  });
+
+  test("allAsync checks every item before it rejects with a rejection", async () => {
+    await expect(
+      M.allAsync([
+        Promise.reject(new Error("first")) as Promise<Maybe<number>>,
+        Promise.resolve(bad(42)),
+      ])
+    ).rejects.toThrow(new TypeError("Maybe.allAsync: item 1 is not a Maybe"));
+  });
+
+  test("allAsync rejects when a promise resolves to a non-Maybe", async () => {
+    await expect(
+      M.allAsync([Promise.resolve(some(1)), Promise.resolve(bad(2))])
+    ).rejects.toThrow(new TypeError("Maybe.allAsync: item 1 is not a Maybe"));
   });
 });

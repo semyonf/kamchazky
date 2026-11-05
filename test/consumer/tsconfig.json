@@ -1,0 +1,18 @@
+{
+  "compilerOptions": {
+    "strict": true,
+    "declaration": true,
+    "emitDeclarationOnly": true,
+    // A plain `tsc -p test/consumer` only checks; test/dist.test.ts passes
+    // `--noEmit false` and a temporary `--outDir` to read the declarations.
+    "noEmit": true,
+    "outDir": "out",
+    "rootDir": ".",
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "target": "es2022",
+    "types": [],
+    "skipLibCheck": false
+  },
+  "files": ["esm.mts", "cjs.cts", "eslint-config.mts", "eslint-config.cts"]
+}

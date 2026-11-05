@@ -7,5 +7,8 @@
     "skipLibCheck": true,
     "noEmit": true
   },
-  "include": ["src", "test"]
+  "include": ["src", "test"],
+  // A consumer of the built package: test/dist.test.ts compiles it after
+  // the build, with its own tsconfig.
+  "exclude": ["test/consumer"]
 }
