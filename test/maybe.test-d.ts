@@ -329,6 +329,18 @@ describe("Maybe precision", () => {
     expectTypeOf(M.map(none(), (x) => x)).toEqualTypeOf<None>();
   });
 
+  test("flatMap with a callback that only throws holds never", () => {
+    const fail = (v: unknown): never => {
+      throw new Error(String(v));
+    };
+    expectTypeOf(M.flatMap(m, (v) => fail(v))).toEqualTypeOf<Maybe<never>>();
+    expectTypeOf(
+      M.flatMap(m, () => {
+        throw new Error("x");
+      })
+    ).toEqualTypeOf<Maybe<never>>();
+  });
+
   test("flatMap returning only None holds never", () => {
     expectTypeOf(M.flatMap(m, () => none())).toEqualTypeOf<Maybe<never>>();
   });
@@ -343,9 +355,12 @@ describe("Maybe precision", () => {
     expectTypeOf(M.unwrap(none())).toEqualTypeOf<never>();
   });
 
-  test("transpose of Some(Ok) adds no error", () => {
+  test("transpose of Some(Ok) or None adds no error", () => {
     expectTypeOf(M.transpose(some(ok(1)))).toEqualTypeOf<
       Result<Maybe<number>, never>
+    >();
+    expectTypeOf(M.transpose(none())).toEqualTypeOf<
+      Result<Maybe<unknown>, never>
     >();
   });
 
@@ -394,5 +409,89 @@ describe("Maybe.map rejects async callbacks", () => {
     M.filter(m, async () => true);
     // @ts-expect-error — flatMap needs a Maybe, not a Promise
     M.flatMap(m, async (x) => some(x));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// An `any` input: the value is `unknown`, never `never`.
+// ---------------------------------------------------------------------------
+
+describe("an any input is not taken for never or for one branch", () => {
+  const untyped = JSON.parse("null");
+  const m = none() as Maybe<number>;
+
+  test("unwrap / unwrapOr give unknown, unwrapOrElse what fn returns", () => {
+    expectTypeOf(M.unwrap(untyped)).toEqualTypeOf<unknown>();
+    expectTypeOf(M.unwrapOr(untyped, 1)).toEqualTypeOf<unknown>();
+    // unwrapOrElse keeps the types of 3.0.0.
+    expectTypeOf(M.unwrapOrElse(untyped, () => 1)).toEqualTypeOf<number>();
+    const v = M.unwrap(untyped);
+    // @ts-expect-error — unknown does not assign to string
+    const s: string = v;
+    void s;
+  });
+
+  test("map / inspect do not assume Some", () => {
+    expectTypeOf(M.map(untyped, () => 1)).toEqualTypeOf<Maybe<number>>();
+    expectTypeOf(M.inspect(untyped, () => {})).toEqualTypeOf<Maybe<unknown>>();
+  });
+
+  test("an annotated callback does not pick the Some overload", () => {
+    expectTypeOf(M.map(untyped, (v: number) => v + 1)).toEqualTypeOf<
+      Maybe<number>
+    >();
+    expectTypeOf(M.inspect(untyped, (v: number) => void v)).toEqualTypeOf<
+      Maybe<unknown>
+    >();
+    expectTypeOf(M.flatMap(untyped, (v: number) => some(v))).toEqualTypeOf<
+      Maybe<number>
+    >();
+    expectTypeOf(
+      M.match(untyped, { some: (v: number) => v, none: () => "none" })
+    ).toEqualTypeOf<number | string>();
+    // @ts-expect-error — value exists only on a Some
+    M.map(untyped, (v: number) => v + 1).value;
+    const p = M.map(untyped, async (v: number) => v);
+    // @ts-expect-error — an async callback still gives no Maybe
+    p.some;
+  });
+
+  test("flatMap / match / transpose", () => {
+    expectTypeOf(M.flatMap(untyped, () => some(1))).toEqualTypeOf<
+      Maybe<number>
+    >();
+    expectTypeOf(M.flatMap(m, () => untyped)).toEqualTypeOf<Maybe<unknown>>();
+    expectTypeOf(
+      M.match(untyped, { some: (v) => v, none: () => 0 })
+    ).toEqualTypeOf<unknown>();
+    expectTypeOf(M.transpose(untyped)).toEqualTypeOf<
+      Result<Maybe<unknown>, Error>
+    >();
+  });
+
+  test("typed inputs keep their precise types", () => {
+    expectTypeOf(M.map(none(), (x) => x)).toEqualTypeOf<None>();
+    expectTypeOf(M.flatMap(m, () => none())).toEqualTypeOf<Maybe<never>>();
+    expectTypeOf([m].map(M.unwrap)).toEqualTypeOf<number[]>();
+  });
+});
+
+describe("an any value from the map callback becomes unknown", () => {
+  test("Maybe.map", () => {
+    const m = none() as Maybe<number>;
+    expectTypeOf(M.map(m, () => JSON.parse("1"))).toEqualTypeOf<
+      Maybe<unknown>
+    >();
+    expectTypeOf(M.map(some(1), () => JSON.parse("1"))).toEqualTypeOf<
+      Maybe<unknown>
+    >();
+    expectTypeOf(
+      M.map(JSON.parse("null"), () => JSON.parse("1"))
+    ).toEqualTypeOf<Maybe<unknown>>();
+    expectTypeOf(
+      M.map(m, () => {
+        throw new Error();
+      })
+    ).toEqualTypeOf<Maybe<never>>();
   });
 });

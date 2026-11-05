@@ -13,6 +13,13 @@ import {
   some,
 } from "../src/index.js";
 
+/** `[a, <hole>, b]`: a sparse array, as `any` input can bring. */
+function holey<T>(a: T, b: T): T[] {
+  const items = [a];
+  items[2] = b;
+  return items;
+}
+
 // ---------------------------------------------------------------------------
 // Factories
 // ---------------------------------------------------------------------------
@@ -229,6 +236,22 @@ describe("Result.flatten", () => {
     expect(!r.ok && r.error).toBe(outerErr);
     expect(!r.ok && r.error).toBeInstanceOf(RangeError);
   });
+
+  // Through `any` only; 3.0.0 returned the value.
+  test.each([
+    ["5", () => Result.flatten(5 as never), "input"],
+    ["null", () => Result.flatten(null as never), "input"],
+    ["ok(5)", () => Result.flatten(ok(5) as never), "value"],
+    [
+      "ok({ ok: false, error: 'denied' })",
+      () => Result.flatten(ok({ ok: false, error: "denied" }) as never),
+      "value",
+    ],
+  ])("%s throws a TypeError", (_, run, part) => {
+    expect(run).toThrow(
+      new TypeError(`Result.flatten: ${part} is not a Result`)
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -258,6 +281,21 @@ describe("Result.exhaustive", () => {
     expect(() => Result.exhaustive(42 as never)).toThrow(
       "Unhandled result case: 42"
     );
+    expect(() => Result.exhaustive("pending" as never)).toThrow(
+      'Unhandled result case: "pending"'
+    );
+  });
+
+  test("does not serialize an object into the message", () => {
+    const value = ok({ password: "PLACEHOLDER" });
+    let caught: unknown;
+    try {
+      Result.exhaustive(value as never);
+    } catch (e) {
+      caught = e;
+    }
+    expect((caught as Error).message).toBe("Unhandled result case: <object>");
+    expect((caught as Error).cause).toBe(value);
   });
 });
 
@@ -324,6 +362,44 @@ describe("Result.split", () => {
   });
 });
 
+// Through `any` only: an input that is not a Result is a programmer error.
+// 3.0.0 returned or threw whatever the object held.
+describe("extraction rejects an input that is not a Result", () => {
+  const revoked = Proxy.revocable({}, {});
+  revoked.revoke();
+  const inputs: [string, unknown][] = [
+    ["5", 5],
+    ["undefined", undefined],
+    ["{ ok: false, error: 'denied' }", { ok: false, error: "denied" }],
+    ["{ ok: true } after a JSON round trip", JSON.parse('{"ok":true}')],
+    ["a revoked Proxy", revoked.proxy],
+  ];
+  const calls: [string, (input: never) => unknown][] = [
+    ["unwrap", (r) => Result.unwrap(r)],
+    ["unwrapErr", (r) => Result.unwrapErr(r)],
+    ["unwrapOr", (r) => Result.unwrapOr(r, 0)],
+    ["unwrapOrElse", (r) => Result.unwrapOrElse(r, () => 0)],
+    ["split", (r) => Result.split(r)],
+    ["match", (r) => Result.match(r, { ok: () => 1, err: () => 2 })],
+  ];
+  describe.each(calls)("Result.%s", (name, call) => {
+    test.each(inputs)("%s throws a TypeError", (_, input) => {
+      expect(() => call(input as never)).toThrow(
+        new TypeError(`Result.${name}: input is not a Result`)
+      );
+    });
+  });
+
+  test("the handlers and fn are not called", () => {
+    const fn = vi.fn();
+    expect(() => Result.unwrapOrElse(5 as never, fn)).toThrow(TypeError);
+    expect(() => Result.match(5 as never, { ok: fn, err: fn })).toThrow(
+      TypeError
+    );
+    expect(fn).not.toHaveBeenCalled();
+  });
+});
+
 describe("Result.transpose", () => {
   test("Ok(Some(v)) -> Some(Ok(v))", () => {
     const r = Result.transpose(ok(some(42)));
@@ -347,6 +423,19 @@ describe("Result.transpose", () => {
       expect(r.value.ok).toBe(false);
       if (!r.value.ok) expect(r.value.error).toBe(e);
     }
+  });
+
+  // Through `any` only; 3.0.0 returned a Some or a None.
+  test.each([
+    ["5", () => Result.transpose(5 as never), "input is not a Result"],
+    ["ok(5)", () => Result.transpose(ok(5) as never), "value is not a Maybe"],
+    [
+      "ok({ some: true })",
+      () => Result.transpose(ok({ some: true }) as never),
+      "value is not a Maybe",
+    ],
+  ])("%s throws a TypeError", (_, run, message) => {
+    expect(run).toThrow(new TypeError(`Result.transpose: ${message}`));
   });
 });
 
@@ -611,22 +700,67 @@ describe("Result.tryCatch", () => {
     expect(!r.ok && r.error).toBeInstanceOf(TypeError);
     expect(!r.ok && r.error.message).toContain("tryCatchAsync");
     expect(!r.ok && r.error.cause).toBe(rejection);
+    // tryCatch leaves the rejection to the caller; this test handles it.
+    rejection.catch(() => {});
   });
 
-  test("does not leave an unhandled rejection behind", async () => {
-    const unhandled: unknown[] = [];
-    const onUnhandled = (reason: unknown) => unhandled.push(reason);
-    process.on("unhandledRejection", onUnhandled);
-    try {
-      const fn: () => unknown = async () => {
-        throw new Error("db down");
-      };
-      Result.tryCatch(fn);
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    } finally {
-      process.off("unhandledRejection", onUnhandled);
+  test("never calls then: a rejection is not marked handled", () => {
+    const pending = new Promise<never>(() => {});
+    const then = vi.spyOn(pending, "then");
+    const r = Result.tryCatch((() => pending) as () => unknown);
+    expect(!r.ok && r.error.cause).toBe(pending);
+    expect(then).not.toHaveBeenCalled();
+  });
+
+  test("does not run a lazy thenable such as a query builder", () => {
+    const then = vi.fn();
+    const query = { where: () => query, then };
+    const r = Result.tryCatch((() => query.where()) as () => unknown);
+    expect(r.ok).toBe(false);
+    expect(!r.ok && r.error).toBeInstanceOf(TypeError);
+    expect(!r.ok && r.error.cause).toBe(query);
+    expect(then).not.toHaveBeenCalled();
+  });
+
+  test("the TypeError for a returned Promise goes through onError", () => {
+    // Generic code compiles for an async fn and types the error as the
+    // mapper's result, so the runtime must deliver that.
+    class AppError extends Error {
+      readonly code = "E_APP";
     }
-    expect(unhandled).toEqual([]);
+    const seen: unknown[] = [];
+    const safe = <T>(f: () => T) =>
+      Result.tryCatch(f, (e) => {
+        seen.push(e);
+        return new AppError("mapped");
+      });
+    const pending = new Promise<never>(() => {});
+    const r = safe(() => pending);
+    expect(!r.ok && r.error).toBeInstanceOf(AppError);
+    expect(!r.ok && r.error.code).toBe("E_APP");
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toBeInstanceOf(TypeError);
+    expect((seen[0] as TypeError).cause).toBe(pending);
+  });
+
+  test("a mapper that rethrows lets the TypeError for a Promise through", () => {
+    const pending = new Promise<never>(() => {});
+    const run = () =>
+      Result.tryCatch((() => pending) as () => unknown, (e) => {
+        throw e;
+      });
+    expect(run).toThrow(TypeError);
+    expect(run).toThrow("tryCatchAsync");
+  });
+
+  test("an async fn has already started when the Err is returned", () => {
+    let started = false;
+    const fn: () => unknown = async () => {
+      started = true;
+    };
+    const r = Result.tryCatch(fn);
+    expect(r.ok).toBe(false);
+    expect(started).toBe(true);
   });
 
   test("a value whose `then` getter throws is an Ok", () => {
@@ -643,6 +777,29 @@ describe("Result.tryCatch", () => {
   test("allows functions returning any", () => {
     const r = Result.tryCatch(() => JSON.parse('{"a":1}'));
     expect(r.ok && r.value).toEqual({ a: 1 });
+  });
+});
+
+// `map` passes (item, index, array); the types accept these functions there
+// through the overload without onError, so the index is not taken for it.
+describe("tryCatch, tryCatchAsync and fromPromise point-free in map", () => {
+  const boom = (): number => {
+    throw new Error("boom");
+  };
+
+  test("tryCatch", () => {
+    const rs = [boom, boom, () => 1].map(Result.tryCatch);
+    expect(rs.map((r) => r.ok)).toEqual([false, false, true]);
+    expect(!rs[1]?.ok && rs[1]?.error.message).toBe("boom");
+  });
+
+  test("tryCatchAsync and fromPromise", async () => {
+    const fns = [boom, boom].map((f) => async () => f());
+    const a = await Promise.all(fns.map(Result.tryCatchAsync));
+    expect(a.map((r) => !r.ok && r.error.message)).toEqual(["boom", "boom"]);
+    const ps = [Promise.reject(new Error("x")), Promise.reject(new Error("y"))];
+    const b = await Promise.all(ps.map(Result.fromPromise));
+    expect(b.map((r) => !r.ok && r.error.message)).toEqual(["x", "y"]);
   });
 });
 
@@ -889,6 +1046,24 @@ describe("Result.collect", () => {
     expect(r.ok && r.value).toEqual([42]);
   });
 
+  test("the AggregateError message counts the failures, without their text", async () => {
+    const r = Result.collect(
+      err(new Error("PLACEHOLDER")),
+      ok(1),
+      err(new TypeError("b"))
+    );
+    expect(!r.ok && r.error.message).toBe(
+      "Result.collect: 2 of 3 items failed"
+    );
+    const a = await Result.collectAsync(
+      Promise.reject("PLACEHOLDER") as Promise<Result<number>>,
+      Promise.resolve(ok(1))
+    );
+    expect(!a.ok && a.error.message).toBe(
+      "Result.collectAsync: 1 of 2 items failed"
+    );
+  });
+
   test("works with single Err", () => {
     const r = Result.collect(err(new Error("only")));
     expect(r.ok).toBe(false);
@@ -915,6 +1090,19 @@ describe("Result.unwrapErr", () => {
 
   test("throws on Ok", () => {
     expect(() => Result.unwrapErr(ok(1))).toThrow("Called unwrapErr on Ok");
+  });
+
+  test("does not put the Ok value into the thrown error", () => {
+    const secret = { password: "PLACEHOLDER" };
+    let caught: unknown;
+    try {
+      Result.unwrapErr(ok(secret));
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).cause).toBeUndefined();
+    expect("cause" in (caught as Error)).toBe(false);
   });
 });
 
@@ -944,6 +1132,11 @@ describe("Result.isResult", () => {
     ["Err with a non-Error error", { ok: false, error: "boom" }],
     ["a non-boolean ok", { ok: "yes", value: 1 }],
     ["an API DTO", { ok: true, error: "x" }],
+    [
+      "an API DTO with a value and an error",
+      { ok: true, value: 1, error: "x" },
+    ],
+    ["an Err with a value", { ok: false, error: new Error(), value: 1 }],
     ["a Maybe", some(1)],
   ])("rejects %s", (_, value) => {
     expect(Result.isResult(value)).toBe(false);
@@ -999,6 +1192,34 @@ describe("combinators accept an array", () => {
   test("a single Result argument is still the rest form", () => {
     const r = Result.all(ok([1, 2]));
     expect(r.ok && r.value).toEqual([[1, 2]]);
+  });
+
+  // `map` passes (items, index, array); the types accept that, so the
+  // runtime takes the first argument as the list.
+  test("point-free in map, flatMap and Array.from", async () => {
+    const e = new Error("e");
+    const groups = [[ok(1), ok(2)], [ok(3), err(e)], []];
+    expect(groups.map(Result.all)).toEqual([ok([1, 2]), err(e), ok([])]);
+    // Array.from passes (items, index).  TypeScript rejects this call (it
+    // takes the element type from the callback), plain JavaScript does not.
+    const from = Array.from as (items: unknown[], fn: unknown) => unknown[];
+    expect(from(groups, Result.all)).toEqual(groups.map(Result.all));
+    expect(groups.flatMap(Result.all)).toEqual(groups.map(Result.all));
+    const collected = groups.map(Result.collect);
+    expect(collected.map((r) => r.ok)).toEqual([true, false, true]);
+    const pending = groups.map((g) => g.map((r) => Promise.resolve(r)));
+    expect(await Promise.all(pending.map(Result.allAsync))).toEqual(
+      groups.map(Result.all)
+    );
+    const asyncCollected = await Promise.all(pending.map(Result.collectAsync));
+    expect(asyncCollected.map((r) => r.ok)).toEqual([true, false, true]);
+  });
+
+  test("an array next to a Result is still not a Result", () => {
+    const bad = [ok(1)] as unknown as Result<number>;
+    expect(() => Result.all(bad, ok(2))).toThrow(
+      new TypeError("Result.all: item 0 is not a Result")
+    );
   });
 });
 
@@ -1061,9 +1282,7 @@ describe("hostile values never make a function throw", () => {
     } catch (e) {
       caught = e;
     }
-    expect((caught as Error).message).toBe(
-      "Unhandled result case: <unprintable value>"
-    );
+    expect((caught as Error).message).toBe("Unhandled result case: <object>");
     expect((caught as Error).cause).toBe(value);
   });
 
@@ -1074,8 +1293,301 @@ describe("hostile values never make a function throw", () => {
     expect(typeof r.error.message).toBe("string");
   });
 
-  test("an Error-shaped object without a string message is normalized", () => {
-    const bad = Object.assign(new Error("x"), { message: 42 });
+  test("an object with Error.prototype but no string message is normalized", () => {
+    const bad = Object.assign(Object.create(Error.prototype), { message: 42 });
     expect(typeof normalizeError(bad).message).toBe("string");
+    expect(normalizeError(bad).cause).toBe(bad);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Error detection with and without Error.isError (Node 20 / 22 lack it)
+// ---------------------------------------------------------------------------
+
+type Lib = typeof import("../src/index.js");
+
+/** Load a fresh copy of the library with `Error.isError` removed, as on
+ *  runtimes that do not have it. */
+async function loadWithoutIsError(): Promise<Lib> {
+  const holder = Error as { isError?: unknown };
+  const saved = holder.isError;
+  delete holder.isError;
+  try {
+    vi.resetModules();
+    return await import("../src/index.js");
+  } finally {
+    if (saved !== undefined) holder.isError = saved;
+  }
+}
+
+/** Load a fresh copy of the library with `Error.isError` replaced by a
+ *  sham that reads the tag, as core-js installs on Node 20 / 22. */
+async function loadWithShamIsError(): Promise<Lib> {
+  const holder = Error as { isError?: unknown };
+  const saved = holder.isError;
+  holder.isError = function isError(value: unknown): boolean {
+    const tag = Object.prototype.toString.call(value);
+    return (
+      typeof value === "object" &&
+      value !== null &&
+      (tag === "[object Error]" || tag === "[object DOMException]")
+    );
+  };
+  try {
+    vi.resetModules();
+    return await import("../src/index.js");
+  } finally {
+    if (saved === undefined) delete holder.isError;
+    else holder.isError = saved;
+  }
+}
+
+/** Load a fresh copy of the library: a loader above may have left a copy
+ *  made without `Error.isError` in the module cache. */
+async function loadFresh(): Promise<Lib> {
+  vi.resetModules();
+  return await import("../src/index.js");
+}
+
+/** Load a fresh copy of the library on a runtime without `Error.isError`
+ *  and without `process.getBuiltinModule` (a browser, or Node before 20.16
+ *  / 22.3): only the tag tells a real Error. */
+async function loadWithTagOnly(): Promise<Lib> {
+  const holder = Error as { isError?: unknown };
+  const saved = holder.isError;
+  const getBuiltinModule = process.getBuiltinModule;
+  delete holder.isError;
+  (process as { getBuiltinModule?: unknown }).getBuiltinModule = undefined;
+  try {
+    vi.resetModules();
+    return await import("../src/index.js");
+  } finally {
+    if (saved !== undefined) holder.isError = saved;
+    process.getBuiltinModule = getBuiltinModule;
+  }
+}
+
+/** A real Error whose own `Symbol.toStringTag` hides the built-in tag. */
+const taggedError = (message: unknown): Error =>
+  Object.assign(new Error("x"), {
+    [Symbol.toStringTag]: "Tagged",
+    message,
+  });
+
+describe.each([
+  ["with Error.isError", loadFresh],
+  ["without Error.isError", loadWithoutIsError],
+  ["with a sham of Error.isError that reads the tag", loadWithShamIsError],
+  ["with the tag only", loadWithTagOnly],
+])("error detection %s", (_, load) => {
+  test("a Proxy of a fake or of an Error with a non-string message is not an Error", async () => {
+    const lib = await load();
+    const fake = new Proxy({ [Symbol.toStringTag]: "Error" }, {});
+    expect(lib.normalizeError(fake)).not.toBe(fake);
+    const proxied = new Proxy(
+      Object.assign(new Error("x"), { message: 1 }),
+      {}
+    );
+    expect(lib.normalizeError(proxied)).not.toBe(proxied);
+    expect(lib.isResult({ ok: false, error: proxied })).toBe(false);
+  });
+
+  test("a fake with Symbol.toStringTag 'Error' is not an Error", async () => {
+    const lib = await load();
+    const bare = { [Symbol.toStringTag]: "Error" };
+    expect(lib.normalizeError(bare)).not.toBe(bare);
+    expect(lib.err(bare as unknown as Error).error.message).toBe(
+      "Non-Error object thrown"
+    );
+    const fake = { [Symbol.toStringTag]: "Error", message: "fake" };
+    const n = lib.normalizeError(fake);
+    expect(n).not.toBe(fake);
+    expect(n).toBeInstanceOf(Error);
+    expect(n.cause).toBe(fake);
+    expect(lib.err(fake as unknown as Error).error).not.toBe(fake);
+    expect(lib.isResult({ ok: false, error: fake })).toBe(false);
+  });
+
+  test("a real Error with a non-string message keeps its identity", async () => {
+    const lib = await load();
+    class HttpError extends Error {}
+    const e = Object.assign(new HttpError("x"), { message: 42 });
+    expect(lib.normalizeError(e)).toBe(e);
+    expect(lib.err(e).error).toBe(e);
+    expect(lib.isResult({ ok: false, error: e })).toBe(true);
+  });
+
+  test("an Error from another realm keeps its identity", async () => {
+    const lib = await load();
+    const foreign = runInNewContext("new TypeError('x')") as Error;
+    expect(lib.normalizeError(foreign)).toBe(foreign);
+    expect(lib.err(foreign).error).toBe(foreign);
+  });
+
+  test("a real Error with its own toStringTag keeps its identity", async () => {
+    const lib = await load();
+    class Tagged extends Error {
+      get [Symbol.toStringTag]() {
+        return "Tagged";
+      }
+    }
+    const e = new Tagged("x");
+    expect(lib.normalizeError(e)).toBe(e);
+  });
+});
+
+// The internal slot tells a real Error that sets its own tag.  Without
+// `Error.isError` it comes from node:util; the tag alone cannot tell it.
+describe.each([
+  ["with Error.isError", loadFresh],
+  ["without Error.isError", loadWithoutIsError],
+  ["with a sham of Error.isError that reads the tag", loadWithShamIsError],
+])("a real Error with its own tag %s", (_, load) => {
+  test("keeps its identity with a non-string message", async () => {
+    const lib = await load();
+    const e = taggedError(42);
+    expect(lib.normalizeError(e)).toBe(e);
+    expect(lib.isResult({ ok: false, error: e })).toBe(true);
+  });
+
+  test("keeps its identity from another realm", async () => {
+    const lib = await load();
+    const foreign = runInNewContext(
+      "const e = new Error('x'); e[Symbol.toStringTag] = 'Tagged'; e"
+    ) as Error;
+    expect(lib.normalizeError(foreign)).toBe(foreign);
+  });
+});
+
+describe("a real Error with its own tag with the tag only", () => {
+  test("is taken for an Error only with a string message from this realm", async () => {
+    const lib = await loadWithTagOnly();
+    const own = taggedError("x");
+    expect(lib.normalizeError(own)).toBe(own);
+    const nonString = taggedError(42);
+    expect(lib.normalizeError(nonString)).not.toBe(nonString);
+    const foreign = runInNewContext(
+      "const e = new Error('x'); e[Symbol.toStringTag] = 'Tagged'; e"
+    ) as Error;
+    expect(lib.normalizeError(foreign)).not.toBe(foreign);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Malformed input to combinators (through `any`) is a programmer error: a
+// TypeError that names the function and the position, never an Err that
+// looks like a real failure.
+// ---------------------------------------------------------------------------
+
+describe("combinators reject items that are not Results", () => {
+  const bad = (x: unknown) => x as Result<number>;
+
+  test.each([
+    ["all([[ok(1)]])", () => Result.all([bad([ok(1)])]), "Result.all: item 0"],
+    [
+      "all([ok(1)], ok(2))",
+      () => Result.all(bad([ok(1)]), ok(2)),
+      "Result.all: item 0",
+    ],
+    ["all([1, 2])", () => Result.all([bad(1), bad(2)]), "Result.all: item 0"],
+    ["all([null])", () => Result.all([bad(null)]), "Result.all: item 0"],
+    [
+      "all(sparse)",
+      () => Result.all(holey(ok(1), ok(2)) as Result<number>[]),
+      "Result.all: item 1",
+    ],
+    ["all(Set)", () => Result.all(bad(new Set([ok(1)]))), "Result.all: item 0"],
+    [
+      "collect([[ok(1)]])",
+      () => Result.collect([bad([ok(1)])]),
+      "Result.collect: item 0",
+    ],
+    [
+      "collect(sparse)",
+      () => Result.collect(holey(ok(1), ok(2)) as Result<number>[]),
+      "Result.collect: item 1",
+    ],
+    [
+      "all({ ok: 'yes' })",
+      () => Result.all([bad({ ok: "yes", value: 1 })]),
+      "Result.all: item 0",
+    ],
+  ])("%s throws a TypeError", (_, run, message) => {
+    expect(run).toThrow(TypeError);
+    expect(run).toThrow(`${message} is not a Result`);
+  });
+
+  test("the message does not include the item", () => {
+    expect(() => Result.all([bad({ password: "PLACEHOLDER" })])).toThrow(
+      /^Result\.all: item 0 is not a Result$/
+    );
+  });
+
+  test("allAsync / collectAsync reject when a promise resolves to a non-Result", async () => {
+    await expect(
+      Result.allAsync([Promise.resolve(ok(1)), Promise.resolve(bad(2))])
+    ).rejects.toThrow(new TypeError("Result.allAsync: item 1 is not a Result"));
+    await expect(
+      Result.collectAsync([Promise.resolve(bad(undefined))])
+    ).rejects.toThrow(
+      new TypeError("Result.collectAsync: item 0 is not a Result")
+    );
+  });
+
+  test("allAsync with a hole rejects with a TypeError", async () => {
+    const items = holey(Promise.resolve(ok(1)), Promise.resolve(ok(2)));
+    await expect(
+      Result.allAsync(items as Promise<Result<number>>[])
+    ).rejects.toThrow(new TypeError("Result.allAsync: item 1 is not a Result"));
+  });
+
+  // The item check is isResult: an object it rejects is not taken for an
+  // Err that looks like a real failure.
+  test.each([
+    ["an Err without an error", { ok: false }],
+    ["an Err with a string error", { ok: false, error: "denied" }],
+    ["an Ok without a value", { ok: true }],
+    ["an Ok with an error", { ok: true, value: 1, error: "x" }],
+    ["an Err with a value", { ok: false, error: new Error(), value: 1 }],
+  ])("all, collect, allAsync and collectAsync reject %s", async (_, item) => {
+    for (const run of [
+      () => Result.all([bad(item)]),
+      () => Result.collect([bad(item)]),
+    ]) {
+      expect(run).toThrow(TypeError);
+      expect(run).toThrow(/^Result\.(all|collect): item 0 is not a Result$/);
+    }
+    await expect(Result.allAsync([Promise.resolve(bad(item))])).rejects.toThrow(
+      new TypeError("Result.allAsync: item 0 is not a Result")
+    );
+    await expect(
+      Result.collectAsync([Promise.resolve(bad(item))])
+    ).rejects.toThrow(
+      new TypeError("Result.collectAsync: item 0 is not a Result")
+    );
+  });
+
+  // JSON drops a property whose value is undefined (README).
+  test("an ok() sent through JSON is not a Result; ok(null) is", () => {
+    const wire = JSON.parse(JSON.stringify([ok(), ok(null)])) as unknown[];
+    expect(wire[0]).toEqual({ ok: true });
+    expect(Result.isResult(wire[0])).toBe(false);
+    expect(() => Result.all([bad(wire[0])])).toThrow(
+      new TypeError("Result.all: item 0 is not a Result")
+    );
+    expect(Result.all([bad(wire[1])])).toEqual(ok([null]));
+  });
+
+  test("allAsync checks every item, also after an Err or a rejection", async () => {
+    const e = new Error("real failure");
+    await expect(
+      Result.allAsync([Promise.resolve(err(e)), Promise.resolve(bad(42))])
+    ).rejects.toThrow(new TypeError("Result.allAsync: item 1 is not a Result"));
+    await expect(
+      Result.allAsync([
+        Promise.reject(e) as Promise<Result<number>>,
+        Promise.resolve(bad(42)),
+      ])
+    ).rejects.toThrow(new TypeError("Result.allAsync: item 1 is not a Result"));
   });
 });

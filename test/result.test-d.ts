@@ -472,10 +472,9 @@ describe("Result.tryCatch rejects async functions", () => {
     expectTypeOf(r).toEqualTypeOf<Result<never, Error>>();
   });
 
-  test("function returning any stays allowed", () => {
+  test("function returning any gives unknown", () => {
     const r = Result.tryCatch(() => JSON.parse("1"));
-    // biome-ignore lint/suspicious/noExplicitAny: JSON.parse returns any
-    expectTypeOf(r).toEqualTypeOf<Result<any, Error>>();
+    expectTypeOf(r).toEqualTypeOf<Result<unknown, Error>>();
   });
 
   test("function returning unknown stays allowed", () => {
@@ -653,6 +652,37 @@ describe("uninferable error and value types are never", () => {
     >();
   });
 
+  test("a callback that only throws gives never, not unknown", () => {
+    const fail = (e: unknown): never => {
+      throw e;
+    };
+    expectTypeOf(
+      Result.flatMap(r, () => {
+        throw new Error("x");
+      })
+    ).toEqualTypeOf<Result<never, TypeError>>();
+    expectTypeOf(Result.flatMap(r, (v) => fail(v))).toEqualTypeOf<
+      Result<never, TypeError>
+    >();
+    expectTypeOf(
+      Result.orElse(r, (e) => {
+        throw e;
+      })
+    ).toEqualTypeOf<Result<number, never>>();
+    expectTypeOf(Result.orElse(r, (e) => fail(e))).toEqualTypeOf<
+      Result<number, never>
+    >();
+    expectTypeOf(Result.flatMapErr(r, (e) => fail(e))).toEqualTypeOf<
+      Result<number, never>
+    >();
+    expectTypeOf(Result.map(r, (v) => fail(v))).toEqualTypeOf<
+      Result<never, TypeError>
+    >();
+    // Still assignable where such a call was assigned before.
+    const kept: Result<number, TypeError> = Result.orElse(r, (e) => fail(e));
+    void kept;
+  });
+
   test("flatMap returning only Err has value never", () => {
     expectTypeOf(Result.flatMap(r, () => err(new NotFound()))).toEqualTypeOf<
       Result<never, TypeError | NotFound>
@@ -665,7 +695,9 @@ describe("uninferable error and value types are never", () => {
     >();
   });
 
-  test("split / unwrapErr / transpose of an Ok", () => {
+  test("split / unwrapErr / flatten / transpose of an Ok or an Err", () => {
+    // A side the input does not have is never, as in 3.0.0; an `any` input
+    // gives unknown and Error instead (see the untyped tests).
     expectTypeOf(Result.split(ok(1))[0]).toEqualTypeOf<
       ErrResult<never> | undefined
     >();
@@ -673,6 +705,12 @@ describe("uninferable error and value types are never", () => {
     expectTypeOf(Result.unwrap(err(new TypeError()))).toEqualTypeOf<never>();
     expectTypeOf(Result.transpose(ok(some(1)))).toEqualTypeOf<
       Maybe<Result<number, never>>
+    >();
+    expectTypeOf(Result.flatten(ok(ok(1)))).toEqualTypeOf<
+      Result<number, never>
+    >();
+    expectTypeOf(Result.flatten(err(new TypeError()))).toEqualTypeOf<
+      Result<unknown, TypeError>
     >();
   });
 
@@ -798,8 +836,7 @@ describe("Result.map rejects async callbacks", () => {
     >();
     expectTypeOf(Result.map(ok(1), String)).toEqualTypeOf<OkResult<string>>();
     expectTypeOf(Result.map(r, () => JSON.parse("1"))).toEqualTypeOf<
-      // biome-ignore lint/suspicious/noExplicitAny: JSON.parse returns any
-      Result<any, TypeError>
+      Result<unknown, TypeError>
     >();
     expectTypeOf(
       Result.map(r, () => {
@@ -821,5 +858,235 @@ describe("Result.map rejects async callbacks", () => {
     );
     // @ts-expect-error — mapError needs an Error, not a Promise
     Result.mapError(r, async () => new TypeError());
+  });
+});
+
+// ---------------------------------------------------------------------------
+// An `any` input: the value is `unknown`, never `never`, and no branch is
+// assumed.  `never` would assign silently to `string` and `number`.
+// ---------------------------------------------------------------------------
+
+describe("an any input is not taken for never or for one branch", () => {
+  const untyped = JSON.parse("null");
+  const r = err(new TypeError()) as Result<number, TypeError>;
+
+  test("unwrap / unwrapErr / split give unknown and Error", () => {
+    expectTypeOf(Result.unwrap(untyped)).toEqualTypeOf<unknown>();
+    expectTypeOf(Result.unwrapErr(untyped)).toEqualTypeOf<Error>();
+    expectTypeOf(Result.split(untyped)).toEqualTypeOf<
+      | readonly [failure: ErrResult<Error>, value: undefined]
+      | readonly [failure: undefined, value: unknown]
+    >();
+    const v = Result.unwrap(untyped);
+    const e = Result.unwrapErr(untyped);
+    // @ts-expect-error — unknown does not assign to string
+    const s: string = v;
+    // @ts-expect-error — unknown does not assign to number
+    const n: number = v;
+    // @ts-expect-error — Error does not assign to string
+    const m: string = e;
+    void [s, n, m];
+  });
+
+  test("unwrapOr gives unknown, unwrapOrElse what fn returns", () => {
+    expectTypeOf(Result.unwrapOr(untyped, 1)).toEqualTypeOf<unknown>();
+    // unwrapOrElse keeps the types of 3.0.0.
+    expectTypeOf(Result.unwrapOrElse(untyped, () => 1)).toEqualTypeOf<number>();
+  });
+
+  test("map / mapError / inspect / inspectError do not assume a branch", () => {
+    expectTypeOf(Result.map(untyped, () => 1)).toEqualTypeOf<
+      Result<number, Error>
+    >();
+    expectTypeOf(Result.map(untyped, (v) => v)).toEqualTypeOf<
+      Result<unknown, Error>
+    >();
+    expectTypeOf(Result.mapError(untyped, () => new TypeError())).toEqualTypeOf<
+      Result<unknown, TypeError>
+    >();
+    expectTypeOf(Result.inspect(untyped, () => {})).toEqualTypeOf<
+      Result<unknown, Error>
+    >();
+    expectTypeOf(Result.inspectError(untyped, () => {})).toEqualTypeOf<
+      Result<unknown, Error>
+    >();
+  });
+
+  test("map of an any input still rejects an async callback", () => {
+    const m = Result.map(untyped, async () => 1);
+    // @ts-expect-error — not a Result
+    m.ok;
+  });
+
+  test("flatMap / orElse / flatten / transpose / match", () => {
+    expectTypeOf(Result.flatMap(untyped, () => ok(1))).toEqualTypeOf<
+      Result<number, Error>
+    >();
+    expectTypeOf(Result.orElse(untyped, () => ok(1))).toEqualTypeOf<
+      Result<unknown, never>
+    >();
+    expectTypeOf(Result.flatMapErr(untyped, () => ok(1))).toEqualTypeOf<
+      Result<unknown, never>
+    >();
+    expectTypeOf(Result.flatten(untyped)).toEqualTypeOf<
+      Result<unknown, Error>
+    >();
+    expectTypeOf(Result.transpose(untyped)).toEqualTypeOf<
+      Maybe<Result<unknown, Error>>
+    >();
+    expectTypeOf(
+      Result.match(untyped, { ok: (v) => v, err: (e) => e })
+    ).toEqualTypeOf<unknown>();
+  });
+
+  test("an annotated callback does not pick a one-branch overload", () => {
+    class DbError extends Error {
+      readonly code: string = "E_DB";
+    }
+    expectTypeOf(Result.map(untyped, (v: number) => v + 1)).toEqualTypeOf<
+      Result<number, Error>
+    >();
+    expectTypeOf(
+      Result.mapError(untyped, (e: DbError) => new TypeError(e.code))
+    ).toEqualTypeOf<Result<unknown, TypeError>>();
+    expectTypeOf(Result.inspect(untyped, (v: number) => void v)).toEqualTypeOf<
+      Result<unknown, Error>
+    >();
+    expectTypeOf(
+      Result.inspectError(untyped, (e: DbError) => void e)
+    ).toEqualTypeOf<Result<unknown, Error>>();
+    expectTypeOf(Result.flatMap(untyped, (v: number) => ok(v))).toEqualTypeOf<
+      Result<number, Error>
+    >();
+    expectTypeOf(
+      Result.orElse(untyped, (e: DbError) => ok(e.code.length))
+    ).toEqualTypeOf<Result<unknown, never>>();
+    expectTypeOf(
+      Result.flatMapErr(untyped, (e: DbError) => ok(e.code.length))
+    ).toEqualTypeOf<Result<unknown, never>>();
+    expectTypeOf(
+      Result.unwrapOrElse(untyped, (e: DbError) => e.code.length)
+    ).toEqualTypeOf<number>();
+    expectTypeOf(
+      Result.match(untyped, { ok: (v: number) => v, err: (e: DbError) => e })
+    ).toEqualTypeOf<number | DbError>();
+    // The value or error is not readable without narrowing first.
+    // @ts-expect-error — value exists only on an Ok
+    Result.map(untyped, (v: number) => v + 1).value;
+    // @ts-expect-error — error exists only on an Err
+    Result.inspectError(untyped, (e: DbError) => void e).error;
+    const m = Result.map(untyped, async (v: number) => v);
+    // @ts-expect-error — an async callback still gives no Result
+    m.ok;
+  });
+
+  test("a callback that returns any is not taken for never", () => {
+    expectTypeOf(Result.flatMap(r, () => untyped)).toEqualTypeOf<
+      Result<unknown, TypeError | Error>
+    >();
+    expectTypeOf(Result.orElse(r, () => untyped)).toEqualTypeOf<
+      Result<unknown, Error>
+    >();
+    expectTypeOf(Result.flatMapErr(r, () => untyped)).toEqualTypeOf<
+      Result<unknown, Error>
+    >();
+  });
+
+  test("typed inputs keep their precise types", () => {
+    expectTypeOf(Result.map(ok(1), String)).toEqualTypeOf<OkResult<string>>();
+    expectTypeOf(Result.orElse(r, () => ok(0))).toEqualTypeOf<
+      Result<number, never>
+    >();
+    const rs = [r];
+    expectTypeOf(rs.map(Result.unwrap)).toEqualTypeOf<number[]>();
+    expectTypeOf(rs.map(Result.split)).toEqualTypeOf<
+      (
+        | readonly [failure: ErrResult<TypeError>, value: undefined]
+        | readonly [failure: undefined, value: number]
+      )[]
+    >();
+    expectTypeOf(Promise.resolve(r).then(Result.unwrap)).toEqualTypeOf<
+      Promise<number>
+    >();
+    expectTypeOf(Result.unwrap<number, TypeError>(r)).toEqualTypeOf<number>();
+    expectTypeOf(
+      Result.map<number, string, TypeError>(r, String)
+    ).toEqualTypeOf<Result<string, TypeError>>();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// An `any` that a callback returns, or that a Promise holds, becomes the
+// value `unknown` (`JSON.parse`, `res.json()`).  A value given to `ok`
+// directly keeps its type.
+// ---------------------------------------------------------------------------
+
+describe("an any value from fn or a Promise becomes unknown", () => {
+  const r = ok(1) as Result<number, TypeError>;
+  const json = () => Promise.resolve(JSON.parse("1"));
+
+  test("tryCatch / tryCatchAsync / fromPromise", async () => {
+    expectTypeOf(Result.tryCatch(() => JSON.parse("1"))).toEqualTypeOf<
+      Result<unknown, Error>
+    >();
+    expectTypeOf(
+      Result.tryCatch(
+        () => JSON.parse("1"),
+        () => new TypeError()
+      )
+    ).toEqualTypeOf<Result<unknown, TypeError>>();
+    expectTypeOf(await Result.tryCatchAsync(json)).toEqualTypeOf<
+      Result<unknown, Error>
+    >();
+    expectTypeOf(
+      await Result.tryCatchAsync(json, () => new TypeError())
+    ).toEqualTypeOf<Result<unknown, TypeError>>();
+    expectTypeOf(await Result.fromPromise(json())).toEqualTypeOf<
+      Result<unknown, Error>
+    >();
+    expectTypeOf(
+      await Result.fromPromise(json(), () => new TypeError())
+    ).toEqualTypeOf<Result<unknown, TypeError>>();
+  });
+
+  test("map", () => {
+    expectTypeOf(Result.map(r, () => JSON.parse("1"))).toEqualTypeOf<
+      Result<unknown, TypeError>
+    >();
+    expectTypeOf(Result.map(ok(1), () => JSON.parse("1"))).toEqualTypeOf<
+      Result<unknown, never>
+    >();
+    expectTypeOf(
+      Result.map(JSON.parse("null"), () => JSON.parse("1"))
+    ).toEqualTypeOf<Result<unknown, Error>>();
+  });
+
+  test("never and generic code keep their types", async () => {
+    expectTypeOf(
+      await Result.tryCatchAsync(async () => {
+        throw new Error();
+      })
+    ).toEqualTypeOf<Result<never, Error>>();
+    expectTypeOf(
+      await Result.fromPromise(Promise.reject(new Error()))
+    ).toEqualTypeOf<Result<never, Error>>();
+    const safe = <T>(f: () => Promise<T>): Promise<Result<T, Error>> =>
+      Result.tryCatchAsync(f);
+    const wrap = <T>(p: Promise<T>): Promise<Result<T, Error>> =>
+      Result.fromPromise(p);
+    const mapped = <U>(f: (n: number) => U): Result<U, TypeError> =>
+      Result.map(r, f);
+    expectTypeOf(await safe(async () => 1)).toEqualTypeOf<
+      Result<number, Error>
+    >();
+    expectTypeOf(await wrap(Promise.resolve("a"))).toEqualTypeOf<
+      Result<string, Error>
+    >();
+    expectTypeOf(mapped(String)).toEqualTypeOf<Result<string, TypeError>>();
+  });
+
+  test("a value given to ok directly keeps any", () => {
+    // biome-ignore lint/suspicious/noExplicitAny: the documented limit
+    expectTypeOf(ok(JSON.parse("1"))).toEqualTypeOf<OkResult<any>>();
   });
 });

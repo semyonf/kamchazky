@@ -36,12 +36,13 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "eslint"
   ],
   "scripts": {
     "build": "tsup",
     "test": "vitest run",
-    "test:types": "vitest typecheck --run test/result.test-d.ts test/maybe.test-d.ts",
+    "test:types": "vitest run --typecheck.only",
     "typecheck": "tsc",
     "lint": "biome lint",
     "format": "biome format --write",
